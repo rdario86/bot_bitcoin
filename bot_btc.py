@@ -7,27 +7,24 @@ from datetime import timedelta
 st.set_page_config(page_title="App Trading: ORB Bitcoin", layout="wide")
 
 # ==========================================
-# 1. PARÁMETROS DE LA ESTRATEGIA (SIDEBAR CON BOTÓN)
+# 1. PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
     st.header("⚙️ Ajustes ORB")
-    dias_historial = st.slider("Días de Backtesting", 1, 30, 7, help="Cantidad de días hacia atrás a descargar.")
+    dias_historial = st.slider("Días de Backtesting", 1, 30, 7)
     riesgo_porcentaje = st.slider("Riesgo por Operación (%)", 1.0, 3.0, 1.0, 0.5)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
     fuerza_rechazo = st.slider("Rechazo Mínimo de Mecha (%)", 30, 80, 50, 5)
-    
-    # Este botón detiene la recarga automática hasta ser presionado
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
 # ==========================================
-# 2. CONEXIÓN A BINGX Y DESCARGA DE DATOS
+# 2. CONEXIÓN A BINGX 
 # ==========================================
 @st.cache_data(ttl=300, show_spinner="Descargando datos de BingX Futuros...")
 def obtener_datos_bingx(dias):
     try:
         exchange = ccxt.bingx({
             'enableRateLimit': True,
-            # En CCXT, los futuros perpetuos de BingX se manejan como 'swap'
             'options': {'defaultType': 'swap'}
         })
         
@@ -36,10 +33,9 @@ def obtener_datos_bingx(dias):
         since = exchange.parse8601(inicio.isoformat())
         
         todas_las_velas = []
-        limite_velas = 1000 # Límite de seguridad ajustado para BingX
+        limite_velas = 1000 
         
         while True:
-            # Símbolo unificado de CCXT para futuros lineales (margen en USDT)
             velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='1m', since=since, limit=limite_velas)
             if not velas:
                 break
@@ -72,7 +68,7 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (LÓGICA ORB)
+# 3. MOTOR DE BACKTESTING CON SIMULACIÓN DE CIERRE
 # ==========================================
 def ejecutar_backtest(df, pct_rechazo, ratio):
     operaciones = []
@@ -92,10 +88,10 @@ def ejecutar_backtest(df, pct_rechazo, ratio):
         min_5min = rango_inicial['Low'].min()
         
         horario_operativo = df_dia.between_time('09:35', '10:00')
-        trade_abierto = False
+        trade_registrado = False
         
         for idx, row in horario_operativo.iterrows():
-            if trade_abierto: break 
+            if trade_registrado: break 
             
             tamaño_vela = row['High'] - row['Low']
             if tamaño_vela == 0: continue
@@ -105,59 +101,96 @@ def ejecutar_backtest(df, pct_rechazo, ratio):
             mecha_inf = cuerpo_min - row['Low']
             mecha_sup = row['High'] - cuerpo_max
             
+            tipo_trade = None
+            
             if row['Close'] > max_5min and row['Close'] > row['VWAP']:
                 if (mecha_inf / tamaño_vela) >= (pct_rechazo / 100):
+                    tipo_trade = 'Long 🟢'
                     entrada = row['High']
                     stop_loss = row['Low'] 
                     take_profit = entrada + ((entrada - stop_loss) * ratio)
                     
-                    operaciones.append({
-                        'Fecha': idx, 'Tipo': 'Long 🟢', 'Entrada': entrada,
-                        'Stop Loss': stop_loss, 'Take Profit': take_profit,
-                        'Max_ORB': max_5min, 'Min_ORB': min_5min
-                    })
-                    trade_abierto = True
-                    
             elif row['Close'] < min_5min and row['Close'] < row['VWAP']:
                 if (mecha_sup / tamaño_vela) >= (pct_rechazo / 100):
+                    tipo_trade = 'Short 🔴'
                     entrada = row['Low']
                     stop_loss = row['High'] 
                     take_profit = entrada - ((stop_loss - entrada) * ratio)
-                    
-                    operaciones.append({
-                        'Fecha': idx, 'Tipo': 'Short 🔴', 'Entrada': entrada,
-                        'Stop Loss': stop_loss, 'Take Profit': take_profit,
-                        'Max_ORB': max_5min, 'Min_ORB': min_5min
-                    })
-                    trade_abierto = True
+            
+            if tipo_trade:
+                trade_registrado = True
+                resultado = "Sin Resolución ⏳"
+                
+                # Simular evolución del precio el resto del día para definir el resultado
+                df_post_entrada = df_dia.loc[idx:]
+                for jdx, vela in df_post_entrada.iterrows():
+                    if "Long" in tipo_trade:
+                        if vela['Low'] <= stop_loss:
+                            resultado = "Pérdida ❌"
+                            break
+                        elif vela['High'] >= take_profit:
+                            resultado = "Ganancia ✅"
+                            break
+                    else: # Short
+                        if vela['High'] >= stop_loss:
+                            resultado = "Pérdida ❌"
+                            break
+                        elif vela['Low'] <= take_profit:
+                            resultado = "Ganancia ✅"
+                            break
+                
+                operaciones.append({
+                    'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
+                    'Stop Loss': stop_loss, 'Take Profit': take_profit,
+                    'Resultado': resultado,
+                    'Max_ORB': max_5min, 'Min_ORB': min_5min
+                })
 
     return pd.DataFrame(operaciones)
 
 # ==========================================
-# 4. INTERFAZ DE USUARIO Y GRÁFICOS
+# 4. INTERFAZ Y RESULTADOS FORMATADOS
 # ==========================================
 st.title("📈 App de Estrategia ORB - Bitcoin")
-st.markdown("Analiza la ruptura del rango de 5 minutos en la apertura de Nueva York con datos reales de futuros (BingX).")
 
-# Flujo de ejecución principal
 df_btc = obtener_datos_bingx(dias_historial)
 df_operaciones = ejecutar_backtest(df_btc, fuerza_rechazo, ratio_rr)
 
 if df_btc.empty:
-    st.warning("No se pudieron cargar los datos. Verifica que los servidores de BingX estén respondiendo.")
+    st.warning("No se pudieron cargar los datos.")
 elif df_operaciones.empty:
-    st.info(f"No se encontraron operaciones en los últimos {dias_historial} días con estos parámetros. Intenta reducir la exigencia del rechazo.")
+    st.info("No se encontraron operaciones con estos parámetros.")
 else:
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Operaciones Encontradas", len(df_operaciones))
-    col2.metric("Temporalidad Evaluada", "1 Minuto")
-    col3.metric("Datos Analizados", f"{len(df_btc)} velas")
+    # 4.1 Resumen de Operaciones
+    total_trades = len(df_operaciones)
+    aciertos = len(df_operaciones[df_operaciones['Resultado'] == "Ganancia ✅"])
+    fallos = len(df_operaciones[df_operaciones['Resultado'] == "Pérdida ❌"])
+    win_rate = (aciertos / total_trades) * 100 if total_trades > 0 else 0
     
-    st.subheader("📋 Registro de Operaciones")
-    st.dataframe(df_operaciones[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit']], use_container_width=True)
+    st.subheader("📊 Resumen de Rendimiento")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Operaciones", total_trades)
+    col2.metric("Aciertos ✅", aciertos)
+    col3.metric("Fallos ❌", fallos)
+    col4.metric("% Win Rate", f"{win_rate:.1f}%")
     
     st.divider()
     
+    # 4.2 Formato de la Tabla
+    st.subheader("📋 Registro Detallado")
+    
+    # Copiar dataframe para aplicar formato visual de moneda sin alterar los datos originales
+    df_mostrar = df_operaciones.copy()
+    columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit']
+    
+    for col in columnas_moneda:
+        df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.2f}")
+    
+    st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado']], use_container_width=True)
+    
+    st.divider()
+    
+    # 4.3 Gráfico Interactivo
     st.subheader("🔍 Visualizador de Operaciones")
     opciones_trades = df_operaciones['Fecha'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist()
     trade_seleccionado = st.selectbox("Selecciona la fecha del Trade:", opciones_trades)
@@ -177,7 +210,6 @@ else:
         )])
         
         fig.add_trace(go.Scatter(x=df_dia.index, y=df_dia['VWAP'], mode='lines', name='VWAP', line=dict(color='orange', width=1.5)))
-        
         fig.add_hline(y=trade_data['Max_ORB'], line_dash="dash", line_color="blue", annotation_text="Max 5m (09:30)")
         fig.add_hline(y=trade_data['Min_ORB'], line_dash="dash", line_color="blue", annotation_text="Min 5m (09:30)")
         
@@ -194,7 +226,7 @@ else:
         fig.add_hline(y=trade_data['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
         
         fig.update_layout(
-            title=f"Trade {trade_data['Tipo']} el {dia_str}",
+            title=f"Trade {trade_data['Tipo']} el {dia_str} | Resultado: {trade_data['Resultado']}",
             yaxis_title="Precio (USD)",
             xaxis_title="Hora (EST - NY)",
             height=600,
