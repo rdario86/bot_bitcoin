@@ -5,7 +5,8 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
-st.set_page_config(page_title="App Trading: ORB Bitcoin 15m", layout="wide")
+# Título actualizado en la pestaña del navegador
+st.set_page_config(page_title="BOT Estrategia ORB - Bitcoin", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA (MINIMALISTA)
@@ -177,7 +178,8 @@ def ejecutar_backtest(df, ratio):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("📈 App de Estrategia ORB - Bitcoin (Estructural 15m)")
+# Título principal de la aplicación actualizado
+st.title("📈 BOT Estrategia ORB - Bitcoin")
 
 df_btc = obtener_datos_bingx(dias_historial)
 df_operaciones = ejecutar_backtest(df_btc, ratio_rr)
