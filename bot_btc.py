@@ -15,7 +15,7 @@ with st.sidebar.form(key='panel_ajustes'):
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
     fuerza_cuerpo = st.slider("Fuerza de Ruptura (Cuerpo %)", 50, 100, 60, 5)
-    max_extension = st.slider("Extensión Máx. de Entrada (%)", 0.1, 2.0, 0.5, 0.1, help="Distancia máxima permitida entre la línea de ruptura y el cierre de la vela. Si es mayor, no se opera para evitar Stop Loss gigantes.")
+    max_extension = st.slider("Extensión Máx. de Entrada (%)", 0.1, 2.0, 0.5, 0.1, help="Distancia máxima permitida entre la línea de ruptura y el cierre de la vela.")
     
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
@@ -72,7 +72,7 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING 
+# 3. MOTOR DE BACKTESTING (SL = TAMAÑO DE VELA)
 # ==========================================
 def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext):
     operaciones = []
@@ -90,8 +90,6 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext):
             
         max_5min = vela_apertura['High'].iloc[0]
         min_5min = vela_apertura['Low'].iloc[0]
-        
-        mitad_rango = (max_5min + min_5min) / 2
         
         horario_operativo = df_dia.between_time('09:35', '10:00')
         trade_registrado = False
@@ -114,14 +112,16 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext):
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     if distancia_long_pct <= max_ext:
                         tipo_trade = 'Long 🟢'
-                        stop_loss = mitad_rango 
+                        # El Stop Loss se ubica restando el tamaño total de la vela de ruptura
+                        stop_loss = entrada - tamaño_vela 
                         take_profit = entrada + ((entrada - stop_loss) * ratio)
                     
             elif entrada < min_5min:
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     if distancia_short_pct <= max_ext:
                         tipo_trade = 'Short 🔴'
-                        stop_loss = mitad_rango 
+                        # El Stop Loss se ubica sumando el tamaño total de la vela de ruptura
+                        stop_loss = entrada + tamaño_vela 
                         take_profit = entrada - ((stop_loss - entrada) * ratio)
             
             if tipo_trade:
@@ -151,7 +151,7 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext):
                     'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
                     'Stop Loss': stop_loss, 'Take Profit': take_profit,
                     'Resultado': resultado,
-                    'Max_ORB': max_5min, 'Min_ORB': min_5min, 'Mitad_ORB': mitad_rango
+                    'Max_ORB': max_5min, 'Min_ORB': min_5min
                 })
 
     return pd.DataFrame(operaciones)
@@ -214,7 +214,6 @@ else:
         
         fig.add_hline(y=trade_data['Max_ORB'], line_dash="dash", line_color="blue", annotation_text="Max 5m (09:30)")
         fig.add_hline(y=trade_data['Min_ORB'], line_dash="dash", line_color="blue", annotation_text="Min 5m (09:30)")
-        fig.add_hline(y=trade_data['Mitad_ORB'], line_dash="dash", line_color="yellow", annotation_text="Mitad 5m (50%)")
         
         color_flecha = "green" if "Long" in trade_data['Tipo'] else "red"
         simbolo_flecha = "triangle-up" if "Long" in trade_data['Tipo'] else "triangle-down"
@@ -225,7 +224,7 @@ else:
             marker=dict(symbol=simbolo_flecha, size=15, color=color_flecha)
         ))
         
-        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (50%)")
+        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (1 Vela)")
         fig.add_hline(y=trade_data['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
         
         fig.update_layout(
