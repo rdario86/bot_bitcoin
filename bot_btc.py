@@ -5,13 +5,13 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
-st.set_page_config(page_title="App Trading: ORB Bitcoin 15m", layout="wide")
+st.set_page_config(page_title="App Trading: ORB Bitcoin 30m", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ Ajustes ORB (15 Minutos)")
+    st.header("⚙️ Ajustes ORB (30 Minutos)")
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
     
@@ -20,14 +20,14 @@ with st.sidebar.form(key='panel_ajustes'):
     # Stop Loss predeterminado al 0.50%
     stop_loss_pct = st.number_input("Stop Loss Fijo (%)", min_value=0.05, max_value=10.0, value=0.50, step=0.05)
     
-    # Nuevo filtro: Rango de ruptura basado en el cuerpo de la vela
+    # Filtro: Rango de ruptura basado en el cuerpo de la vela
     rango_ruptura = st.slider(
         "Ruptura (% del Cuerpo por fuera)", 
         5, 100, (25, 50), 5, 
         help="Exige que la parte del cuerpo que rompe la línea represente entre un 25% y 50% del total del cuerpo de la vela."
     )
     
-    # Mantiene la validación de que la vela sea sólida y no un Doji
+    # Validación de que la vela sea sólida y no un Doji
     fuerza_cuerpo = st.slider("Fuerza de la Vela (Cuerpo vs Mechas %)", 50, 100, 60, 5)
     
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
@@ -97,15 +97,16 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
     for fecha in fechas:
         df_dia = df[df['Date'] == fecha]
         
-        # Rango de 15 minutos (09:30 a 09:44 captura exactamente 3 velas de 5 min)
-        rango_inicial = df_dia.between_time('09:30', '09:44')
-        if rango_inicial.empty or len(rango_inicial) < 3:
+        # Rango de 30 minutos (09:30 a 09:59 captura exactamente 6 velas de 5 min)
+        rango_inicial = df_dia.between_time('09:30', '09:59')
+        if rango_inicial.empty or len(rango_inicial) < 6:
             continue
             
-        max_15min = rango_inicial['High'].max()
-        min_15min = rango_inicial['Low'].min()
+        max_30min = rango_inicial['High'].max()
+        min_30min = rango_inicial['Low'].min()
         
-        horario_operativo = df_dia.between_time('09:45', '12:00')
+        # Horario operativo desde las 10:00
+        horario_operativo = df_dia.between_time('10:00', '12:00')
         trade_registrado = False
         
         for idx, row in horario_operativo.iterrows():
@@ -121,9 +122,9 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
             tipo_trade = None
             
             # Condición LONG 
-            if entrada > max_15min:
+            if entrada > max_30min:
                 # Calcula cuánto del cuerpo quedó por encima de la línea del rango
-                parte_fuera = entrada - max_15min
+                parte_fuera = entrada - max_30min
                 pct_fuera = (parte_fuera / tamaño_cuerpo) * 100
                 
                 # Exige que la vela tenga buen cuerpo (vs las mechas)
@@ -135,9 +136,9 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
                         take_profit = entrada * (1 + ((sl_pct * ratio) / 100))
                     
             # Condición SHORT 
-            elif entrada < min_15min:
+            elif entrada < min_30min:
                 # Calcula cuánto del cuerpo quedó por debajo de la línea del rango
-                parte_fuera = min_15min - entrada
+                parte_fuera = min_30min - entrada
                 pct_fuera = (parte_fuera / tamaño_cuerpo) * 100
                 
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
@@ -173,7 +174,7 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
                     'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
                     'Stop Loss': stop_loss, 'Take Profit': take_profit,
                     'Resultado': resultado,
-                    'Max_ORB': max_15min, 'Min_ORB': min_15min,
+                    'Max_ORB': max_30min, 'Min_ORB': min_30min,
                     'Pct_Ruptura': pct_fuera
                 })
 
@@ -182,7 +183,7 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("📈 App de Estrategia ORB - Bitcoin (Rango 15 Minutos)")
+st.title("📈 App de Estrategia ORB - Bitcoin (Rango 30 Minutos)")
 
 df_btc = obtener_datos_bingx(dias_historial)
 df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr, rango_ruptura, stop_loss_pct)
@@ -213,7 +214,6 @@ else:
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.2f}")
     
-    # Muestra en la tabla qué porcentaje del cuerpo quedó por fuera
     df_mostrar['Ruptura (%)'] = df_mostrar['Pct_Ruptura'].apply(lambda x: f"{x:.1f}%")
     
     st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Ruptura (%)', 'Resultado']], use_container_width=True)
@@ -238,8 +238,8 @@ else:
             name='BTC/USDT'
         )])
         
-        fig.add_hline(y=trade_data['Max_ORB'], line_dash="dash", line_color="blue", annotation_text="Max 15m (09:30-09:45)")
-        fig.add_hline(y=trade_data['Min_ORB'], line_dash="dash", line_color="blue", annotation_text="Min 15m (09:30-09:45)")
+        fig.add_hline(y=trade_data['Max_ORB'], line_dash="dash", line_color="blue", annotation_text="Max 30m (09:30-10:00)")
+        fig.add_hline(y=trade_data['Min_ORB'], line_dash="dash", line_color="blue", annotation_text="Min 30m (09:30-10:00)")
         
         color_flecha = "green" if "Long" in trade_data['Tipo'] else "red"
         simbolo_flecha = "triangle-up" if "Long" in trade_data['Tipo'] else "triangle-down"
