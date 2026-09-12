@@ -16,6 +16,11 @@ with st.sidebar.form(key='panel_ajustes'):
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", min_value=0.1, value=2.0, step=0.1)
     
+    st.divider()
+    st.subheader("📊 Filtro de Expansión (Volatilidad)")
+    usar_filtro_tamano = st.checkbox("Exigir Vela de Ruptura Mayor al Promedio", value=True, help="Si se activa, la vela que rompe debe ser más grande que el promedio de las últimas X velas.")
+    velas_promedio = st.slider("Número de velas para el promedio (X)", 3, 30, 10, 1)
+    
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
 # ==========================================
@@ -38,13 +43,11 @@ def obtener_datos_bingx(dias):
         
         while True:
             try:
-                # Extracción configurada directamente a 15m
                 velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='15m', since=since, limit=limite_velas)
                 if not velas:
                     break
                 
                 todas_las_velas.extend(velas)
-                # 15 minutos en milisegundos son 900,000
                 since = velas[-1][0] + 900000 
                 
                 if len(velas) < limite_velas:
@@ -73,17 +76,24 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (ESTRUCTURA DE 15 MIN)
+# 3. MOTOR DE BACKTESTING (ESTRUCTURA + FILTRO DE TAMAÑO)
 # ==========================================
-def ejecutar_backtest(df, ratio):
+def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
     operaciones = []
     if df.empty:
         return pd.DataFrame(operaciones)
         
-    fechas = df['Date'].unique()
+    # Calculamos el tamaño de cada vela y su promedio histórico antes de dividir por días
+    df_calc = df.copy()
+    df_calc['Tamaño_Vela'] = df_calc['High'] - df_calc['Low']
+    
+    # Promedio de las X velas ANTERIORES (shift 1 para no incluir la vela actual que está rompiendo)
+    df_calc['Promedio_Tamaño_X'] = df_calc['Tamaño_Vela'].shift(1).rolling(window=periodos_x).mean()
+        
+    fechas = df_calc['Date'].unique()
     
     for fecha in fechas:
-        df_dia = df[df['Date'] == fecha]
+        df_dia = df_calc[df_calc['Date'] == fecha]
         
         # Identificar la vela de las 09:30 (Representa los primeros 15 min)
         vela_apertura = df_dia.between_time('09:30', '09:30')
@@ -98,19 +108,31 @@ def ejecutar_backtest(df, ratio):
         
         for idx, row in horario_operativo.iterrows():
             entrada = row['Close']
+            tamaño_actual = row['Tamaño_Vela']
+            promedio_anterior = row['Promedio_Tamaño_X']
             tipo_trade = None
             
             # DETECCIÓN DE RUPTURA HACIA ARRIBA (LONG)
             if entrada > max_orb:
+                # Aplicamos el nuevo filtro de expansión de vela
+                if usar_filtro and pd.notna(promedio_anterior):
+                    if tamaño_actual <= promedio_anterior:
+                        continue # La vela es pequeña/promedio, ignoramos esta ruptura
+                        
                 tipo_trade = 'Long 🟢'
-                stop_loss = min_orb  # El SL es el mínimo de la primera vela
+                stop_loss = min_orb 
                 riesgo = entrada - stop_loss
                 take_profit = entrada + (riesgo * ratio)
                     
             # DETECCIÓN DE RUPTURA HACIA ABAJO (SHORT)
             elif entrada < min_orb:
+                # Aplicamos el nuevo filtro de expansión de vela
+                if usar_filtro and pd.notna(promedio_anterior):
+                    if tamaño_actual <= promedio_anterior:
+                        continue # La vela es pequeña/promedio, ignoramos esta ruptura
+                        
                 tipo_trade = 'Short 🔴'
-                stop_loss = max_orb  # El SL es el máximo de la primera vela
+                stop_loss = max_orb 
                 riesgo = stop_loss - entrada
                 take_profit = entrada - (riesgo * ratio)
                 
@@ -141,7 +163,8 @@ def ejecutar_backtest(df, ratio):
                     'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
                     'Stop Loss': stop_loss, 'Take Profit': take_profit,
                     'Resultado': resultado,
-                    'Max_ORB': max_orb, 'Min_ORB': min_orb
+                    'Max_ORB': max_orb, 'Min_ORB': min_orb,
+                    'Vela_Ruptura': tamaño_actual, 'Promedio_X_Velas': promedio_anterior
                 })
                 
                 # Solo tomamos la primera ruptura válida del día
@@ -155,12 +178,12 @@ def ejecutar_backtest(df, ratio):
 st.title("📈 App de Estrategia ORB - Bitcoin (Estructural 15m)")
 
 df_btc = obtener_datos_bingx(dias_historial)
-df_operaciones = ejecutar_backtest(df_btc, ratio_rr)
+df_operaciones = ejecutar_backtest(df_btc, ratio_rr, usar_filtro_tamano, velas_promedio)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
 elif df_operaciones.empty:
-    st.info("No se encontraron operaciones en el rango de días seleccionado.")
+    st.info("No se encontraron operaciones. El filtro de expansión de vela podría estar bloqueando entradas con bajo momentum.")
 else:
     total_trades = len(df_operaciones)
     aciertos = len(df_operaciones[df_operaciones['Resultado'] == "Ganancia ✅"])
@@ -182,8 +205,11 @@ else:
     
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.2f}")
+        
+    # Añadimos métricas visuales del tamaño de la vela a la tabla
+    df_mostrar['Expansión'] = (df_mostrar['Vela_Ruptura'] / df_mostrar['Promedio_X_Velas']).apply(lambda x: f"{x:.2f}x el prom.")
     
-    st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado']], use_container_width=True)
+    st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Expansión', 'Resultado']], use_container_width=True)
     
     st.divider()
     
@@ -196,7 +222,6 @@ else:
         fecha_obj = trade_data['Fecha']
         dia_str = fecha_obj.strftime('%Y-%m-%d')
         
-        # Ajustamos el gráfico para que muestre hasta el final del día
         df_dia = df_btc.loc[f"{dia_str} 08:30:00":f"{dia_str} 15:00:00"]
         
         fig = go.Figure(data=[go.Candlestick(
