@@ -8,18 +8,19 @@ import time
 st.set_page_config(page_title="App Trading: ORB Bitcoin 5m", layout="wide")
 
 # ==========================================
-# 1. PARÁMETROS DE LA ESTRATEGIA (VELAS 5M)
+# 1. PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
     st.header("⚙️ Ajustes ORB (5 Minutos)")
-    dias_historial = st.slider("Días de Backtesting", 1, 90, 30)
+    # Límite estricto de 45 días para evitar colapsos de la API
+    dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     riesgo_porcentaje = st.slider("Riesgo por Operación (%)", 1.0, 3.0, 1.0, 0.5)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
     fuerza_rechazo = st.slider("Rechazo Mínimo de Mecha (%)", 30, 80, 50, 5)
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
 # ==========================================
-# 2. CONEXIÓN A BINGX (CON PROTECCIÓN DE LÍMITES)
+# 2. CONEXIÓN A BINGX OPTIMIZADA
 # ==========================================
 @st.cache_data(ttl=300, show_spinner="Descargando datos de BingX Futuros (5m)...")
 def obtener_datos_bingx(dias):
