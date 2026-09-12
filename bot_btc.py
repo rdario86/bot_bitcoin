@@ -15,13 +15,20 @@ with st.sidebar.form(key='panel_ajustes'):
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
     
-    # Parámetros de Riesgo y Ruptura (Stop Loss en 0.50%)
+    st.divider()
+    st.subheader("📏 Filtros de Ruptura")
+    # Stop Loss predeterminado al 0.50%
     stop_loss_pct = st.number_input("Stop Loss Fijo (%)", min_value=0.05, max_value=10.0, value=0.50, step=0.05)
-    min_ruptura = st.slider("Ruptura Mínima Exigida (%)", 0.05, 1.0, 0.1, 0.05, help="Distancia mínima que debe superar el cierre por encima/debajo del rango para considerarse una ruptura clara.")
     
-    # Filtros de Vela
-    fuerza_cuerpo = st.slider("Fuerza de Ruptura (Cuerpo %)", 50, 100, 60, 5)
-    max_extension = st.slider("Extensión Máx. de Entrada (%)", 0.1, 3.0, 0.8, 0.1, help="Evita entrar si la vela cerró demasiado lejos del rango original.")
+    # Nuevo filtro: Rango de ruptura basado en el cuerpo de la vela
+    rango_ruptura = st.slider(
+        "Ruptura (% del Cuerpo por fuera)", 
+        5, 100, (25, 50), 5, 
+        help="Exige que la parte del cuerpo que rompe la línea represente entre un 25% y 50% del total del cuerpo de la vela."
+    )
+    
+    # Mantiene la validación de que la vela sea sólida y no un Doji
+    fuerza_cuerpo = st.slider("Fuerza de la Vela (Cuerpo vs Mechas %)", 50, 100, 60, 5)
     
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
@@ -80,7 +87,7 @@ def obtener_datos_bingx(dias):
 # ==========================================
 # 3. MOTOR DE BACKTESTING 
 # ==========================================
-def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, min_rup, sl_pct):
+def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
     operaciones = []
     if df.empty:
         return pd.DataFrame(operaciones)
@@ -90,6 +97,7 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, min_rup, sl_pct):
     for fecha in fechas:
         df_dia = df[df['Date'] == fecha]
         
+        # Rango de 15 minutos (09:30 a 09:44 captura exactamente 3 velas de 5 min)
         rango_inicial = df_dia.between_time('09:30', '09:44')
         if rango_inicial.empty or len(rango_inicial) < 3:
             continue
@@ -107,23 +115,33 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, min_rup, sl_pct):
             if tamaño_vela == 0: continue
                 
             tamaño_cuerpo = abs(row['Open'] - row['Close'])
+            if tamaño_cuerpo == 0: continue
+                
             entrada = row['Close']
-            
-            distancia_long_pct = ((entrada - max_15min) / max_15min) * 100
-            distancia_short_pct = ((min_15min - entrada) / min_15min) * 100
-            
             tipo_trade = None
             
+            # Condición LONG 
             if entrada > max_15min:
+                # Calcula cuánto del cuerpo quedó por encima de la línea del rango
+                parte_fuera = entrada - max_15min
+                pct_fuera = (parte_fuera / tamaño_cuerpo) * 100
+                
+                # Exige que la vela tenga buen cuerpo (vs las mechas)
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
-                    if min_rup <= distancia_long_pct <= max_ext:
+                    # Exige que la ruptura del cuerpo esté entre el 25% y 50%
+                    if rango_rup[0] <= pct_fuera <= rango_rup[1]:
                         tipo_trade = 'Long 🟢'
                         stop_loss = entrada * (1 - (sl_pct / 100))
                         take_profit = entrada * (1 + ((sl_pct * ratio) / 100))
                     
+            # Condición SHORT 
             elif entrada < min_15min:
+                # Calcula cuánto del cuerpo quedó por debajo de la línea del rango
+                parte_fuera = min_15min - entrada
+                pct_fuera = (parte_fuera / tamaño_cuerpo) * 100
+                
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
-                    if min_rup <= distancia_short_pct <= max_ext:
+                    if rango_rup[0] <= pct_fuera <= rango_rup[1]:
                         tipo_trade = 'Short 🔴'
                         stop_loss = entrada * (1 + (sl_pct / 100))
                         take_profit = entrada * (1 - ((sl_pct * ratio) / 100))
@@ -155,7 +173,8 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, min_rup, sl_pct):
                     'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
                     'Stop Loss': stop_loss, 'Take Profit': take_profit,
                     'Resultado': resultado,
-                    'Max_ORB': max_15min, 'Min_ORB': min_15min
+                    'Max_ORB': max_15min, 'Min_ORB': min_15min,
+                    'Pct_Ruptura': pct_fuera
                 })
 
     return pd.DataFrame(operaciones)
@@ -166,12 +185,12 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, min_rup, sl_pct):
 st.title("📈 App de Estrategia ORB - Bitcoin (Rango 15 Minutos)")
 
 df_btc = obtener_datos_bingx(dias_historial)
-df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr, max_extension, min_ruptura, stop_loss_pct)
+df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr, rango_ruptura, stop_loss_pct)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
 elif df_operaciones.empty:
-    st.info("No se encontraron operaciones con los filtros de cuerpo, extensión y ruptura mínima.")
+    st.info("No se encontraron operaciones con los filtros de ruptura actuales. Intenta ampliar el rango de porcentaje de cuerpo.")
 else:
     total_trades = len(df_operaciones)
     aciertos = len(df_operaciones[df_operaciones['Resultado'] == "Ganancia ✅"])
@@ -194,7 +213,10 @@ else:
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.2f}")
     
-    st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado']], use_container_width=True)
+    # Muestra en la tabla qué porcentaje del cuerpo quedó por fuera
+    df_mostrar['Ruptura (%)'] = df_mostrar['Pct_Ruptura'].apply(lambda x: f"{x:.1f}%")
+    
+    st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Ruptura (%)', 'Resultado']], use_container_width=True)
     
     st.divider()
     
