@@ -16,11 +16,6 @@ with st.sidebar.form(key='panel_ajustes'):
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", min_value=0.1, value=2.0, step=0.1)
     
-    st.divider()
-    st.subheader("📊 Filtro de Expansión (Volatilidad)")
-    usar_filtro_tamano = st.checkbox("Exigir Vela de Ruptura Mayor al Promedio", value=True, help="Si se activa, la vela que rompe debe ser más grande que el promedio de las últimas X velas.")
-    velas_promedio = st.slider("Número de velas para el promedio (X)", 3, 30, 10, 1)
-    
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
 # ==========================================
@@ -76,16 +71,19 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (ESTRUCTURA + FILTRO DE TAMAÑO + CIERRE 16:00)
+# 3. MOTOR DE BACKTESTING (ESTRUCTURA + FILTRO DE 10 VELAS + CIERRE 16:00)
 # ==========================================
-def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
+def ejecutar_backtest(df, ratio):
     operaciones = []
     if df.empty:
         return pd.DataFrame(operaciones)
         
     df_calc = df.copy()
     df_calc['Tamaño_Vela'] = df_calc['High'] - df_calc['Low']
-    df_calc['Promedio_Tamaño_X'] = df_calc['Tamaño_Vela'].shift(1).rolling(window=periodos_x).mean()
+    
+    # Filtro fijo de expansión: Promedio de las últimas 10 velas
+    periodos_x = 10
+    df_calc['Promedio_Tamaño_10'] = df_calc['Tamaño_Vela'].shift(1).rolling(window=periodos_x).mean()
         
     fechas = df_calc['Date'].unique()
     hora_cierre_tiempo = pd.to_datetime('16:00').time()
@@ -105,12 +103,13 @@ def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
         for idx, row in horario_operativo.iterrows():
             entrada = row['Close']
             tamaño_actual = row['Tamaño_Vela']
-            promedio_anterior = row['Promedio_Tamaño_X']
+            promedio_anterior = row['Promedio_Tamaño_10']
             tipo_trade = None
             
             # DETECCIÓN DE RUPTURA HACIA ARRIBA (LONG)
             if entrada > max_orb:
-                if usar_filtro and pd.notna(promedio_anterior):
+                # Exigencia matemática permanente: Vela actual > Promedio de las 10 anteriores
+                if pd.notna(promedio_anterior):
                     if tamaño_actual <= promedio_anterior:
                         continue 
                         
@@ -121,7 +120,8 @@ def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
                     
             # DETECCIÓN DE RUPTURA HACIA ABAJO (SHORT)
             elif entrada < min_orb:
-                if usar_filtro and pd.notna(promedio_anterior):
+                # Exigencia matemática permanente: Vela actual > Promedio de las 10 anteriores
+                if pd.notna(promedio_anterior):
                     if tamaño_actual <= promedio_anterior:
                         continue 
                         
@@ -167,7 +167,7 @@ def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
                     'Stop Loss': stop_loss, 'Take Profit': take_profit,
                     'Resultado': resultado,
                     'Max_ORB': max_orb, 'Min_ORB': min_orb,
-                    'Vela_Ruptura': tamaño_actual, 'Promedio_X_Velas': promedio_anterior
+                    'Vela_Ruptura': tamaño_actual, 'Promedio_10_Velas': promedio_anterior
                 })
                 
                 break 
@@ -180,12 +180,12 @@ def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
 st.title("📈 App de Estrategia ORB - Bitcoin (Estructural 15m)")
 
 df_btc = obtener_datos_bingx(dias_historial)
-df_operaciones = ejecutar_backtest(df_btc, ratio_rr, usar_filtro_tamano, velas_promedio)
+df_operaciones = ejecutar_backtest(df_btc, ratio_rr)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
 elif df_operaciones.empty:
-    st.info("No se encontraron operaciones. El filtro de expansión de vela podría estar bloqueando entradas con bajo momentum.")
+    st.info("No se encontraron operaciones. El filtro de expansión de vela (10 periodos) podría estar bloqueando entradas con bajo momentum.")
 else:
     total_trades = len(df_operaciones)
     aciertos = len(df_operaciones[df_operaciones['Resultado'].str.contains("Ganancia")])
@@ -204,7 +204,6 @@ else:
     st.subheader("📋 Registro Detallado")
     df_mostrar = df_operaciones.copy()
     
-    # Modificación para que el índice (conteo) inicie desde 1 en lugar de 0
     df_mostrar.index = range(1, len(df_mostrar) + 1)
     
     columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit']
@@ -212,7 +211,7 @@ else:
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.2f}")
         
-    df_mostrar['Expansión'] = (df_mostrar['Vela_Ruptura'] / df_mostrar['Promedio_X_Velas']).apply(lambda x: f"{x:.2f}x el prom.")
+    df_mostrar['Expansión'] = (df_mostrar['Vela_Ruptura'] / df_mostrar['Promedio_10_Velas']).apply(lambda x: f"{x:.2f}x el prom.")
     
     st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Expansión', 'Resultado']], use_container_width=True)
     
