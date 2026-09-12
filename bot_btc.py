@@ -76,26 +76,23 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (ESTRUCTURA + FILTRO DE TAMAÑO)
+# 3. MOTOR DE BACKTESTING (ESTRUCTURA + FILTRO DE TAMAÑO + CIERRE 16:00)
 # ==========================================
 def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
     operaciones = []
     if df.empty:
         return pd.DataFrame(operaciones)
         
-    # Calculamos el tamaño de cada vela y su promedio histórico antes de dividir por días
     df_calc = df.copy()
     df_calc['Tamaño_Vela'] = df_calc['High'] - df_calc['Low']
-    
-    # Promedio de las X velas ANTERIORES (shift 1 para no incluir la vela actual que está rompiendo)
     df_calc['Promedio_Tamaño_X'] = df_calc['Tamaño_Vela'].shift(1).rolling(window=periodos_x).mean()
         
     fechas = df_calc['Date'].unique()
+    hora_cierre_tiempo = pd.to_datetime('16:00').time()
     
     for fecha in fechas:
         df_dia = df_calc[df_calc['Date'] == fecha]
         
-        # Identificar la vela de las 09:30 (Representa los primeros 15 min)
         vela_apertura = df_dia.between_time('09:30', '09:30')
         if vela_apertura.empty:
             continue
@@ -103,7 +100,6 @@ def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
         max_orb = vela_apertura['High'].iloc[0]
         min_orb = vela_apertura['Low'].iloc[0]
         
-        # Horario de búsqueda de entradas (09:45 a 12:00 NY)
         horario_operativo = df_dia.between_time('09:45', '12:00')
         
         for idx, row in horario_operativo.iterrows():
@@ -114,10 +110,9 @@ def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
             
             # DETECCIÓN DE RUPTURA HACIA ARRIBA (LONG)
             if entrada > max_orb:
-                # Aplicamos el nuevo filtro de expansión de vela
                 if usar_filtro and pd.notna(promedio_anterior):
                     if tamaño_actual <= promedio_anterior:
-                        continue # La vela es pequeña/promedio, ignoramos esta ruptura
+                        continue 
                         
                 tipo_trade = 'Long 🟢'
                 stop_loss = min_orb 
@@ -126,10 +121,9 @@ def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
                     
             # DETECCIÓN DE RUPTURA HACIA ABAJO (SHORT)
             elif entrada < min_orb:
-                # Aplicamos el nuevo filtro de expansión de vela
                 if usar_filtro and pd.notna(promedio_anterior):
                     if tamaño_actual <= promedio_anterior:
-                        continue # La vela es pequeña/promedio, ignoramos esta ruptura
+                        continue 
                         
                 tipo_trade = 'Short 🔴'
                 stop_loss = max_orb 
@@ -140,10 +134,19 @@ def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
                 resultado = "Sin Resolución ⏳"
                 df_post_entrada = df_dia.loc[idx:]
                 
-                # Simular evolución del precio post-entrada
                 for jdx, vela in df_post_entrada.iterrows():
                     if jdx == idx: continue 
                     
+                    # 1. Validación de Cierre por Tiempo (16:00 NY)
+                    if jdx.time() >= hora_cierre_tiempo:
+                        precio_cierre = vela['Open']
+                        if "Long" in tipo_trade:
+                            resultado = "Ganancia (16:00) ⏱️✅" if precio_cierre > entrada else "Pérdida (16:00) ⏱️❌"
+                        else:
+                            resultado = "Ganancia (16:00) ⏱️✅" if precio_cierre < entrada else "Pérdida (16:00) ⏱️❌"
+                        break
+                    
+                    # 2. Validación normal de TP / SL
                     if "Long" in tipo_trade:
                         if vela['Low'] <= stop_loss:
                             resultado = "Pérdida ❌"
@@ -167,7 +170,6 @@ def ejecutar_backtest(df, ratio, usar_filtro, periodos_x):
                     'Vela_Ruptura': tamaño_actual, 'Promedio_X_Velas': promedio_anterior
                 })
                 
-                # Solo tomamos la primera ruptura válida del día
                 break 
 
     return pd.DataFrame(operaciones)
@@ -185,9 +187,10 @@ if df_btc.empty:
 elif df_operaciones.empty:
     st.info("No se encontraron operaciones. El filtro de expansión de vela podría estar bloqueando entradas con bajo momentum.")
 else:
+    # Ajustamos el contador para que lea correctamente cualquier tipo de ganancia/pérdida
     total_trades = len(df_operaciones)
-    aciertos = len(df_operaciones[df_operaciones['Resultado'] == "Ganancia ✅"])
-    fallos = len(df_operaciones[df_operaciones['Resultado'] == "Pérdida ❌"])
+    aciertos = len(df_operaciones[df_operaciones['Resultado'].str.contains("Ganancia")])
+    fallos = len(df_operaciones[df_operaciones['Resultado'].str.contains("Pérdida")])
     win_rate = (aciertos / total_trades) * 100 if total_trades > 0 else 0
     
     st.subheader("📊 Resumen de Rendimiento")
@@ -206,7 +209,6 @@ else:
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.2f}")
         
-    # Añadimos métricas visuales del tamaño de la vela a la tabla
     df_mostrar['Expansión'] = (df_mostrar['Vela_Ruptura'] / df_mostrar['Promedio_X_Velas']).apply(lambda x: f"{x:.2f}x el prom.")
     
     st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Expansión', 'Resultado']], use_container_width=True)
@@ -222,7 +224,8 @@ else:
         fecha_obj = trade_data['Fecha']
         dia_str = fecha_obj.strftime('%Y-%m-%d')
         
-        df_dia = df_btc.loc[f"{dia_str} 08:30:00":f"{dia_str} 15:00:00"]
+        # Gráfico se ajusta para mostrar hasta las 16:30 y así poder visualizar el cierre forzado
+        df_dia = df_btc.loc[f"{dia_str} 08:30:00":f"{dia_str} 16:30:00"]
         
         fig = go.Figure(data=[go.Candlestick(
             x=df_dia.index,
