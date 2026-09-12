@@ -15,7 +15,13 @@ with st.sidebar.form(key='panel_ajustes'):
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
     fuerza_cuerpo = st.slider("Fuerza de Ruptura (Cuerpo %)", 50, 100, 60, 5)
-    max_extension = st.slider("Extensión Máx. de Entrada (%)", 0.1, 2.0, 0.5, 0.1, help="Distancia máxima permitida entre la línea de ruptura y el cierre de la vela.")
+    max_extension = st.slider("Extensión Máx. de Entrada (%)", 0.1, 2.0, 0.5, 0.1)
+    
+    st.divider()
+    st.subheader("📊 Filtro de Volumen")
+    usar_volumen = st.checkbox("Exigir Ruptura con Alto Volumen", value=True)
+    # Multiplicador: 1.5 significa que la vela debe tener 50% más volumen que el promedio
+    multiplicador_vol = st.slider("Multiplicador (vs SMA 20)", 1.0, 5.0, 1.5, 0.1, help="Factor de volumen comparado con el promedio de las últimas 20 velas.")
     
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
@@ -63,6 +69,9 @@ def obtener_datos_bingx(dias):
         
         df.index = df.index.tz_localize('UTC').tz_convert('America/New_York')
         df = df[~df.index.duplicated(keep='first')]
+        
+        # Calcular Promedio Móvil Simple del Volumen (20 periodos)
+        df['Vol_SMA'] = df['Volume'].rolling(window=20).mean()
         df['Date'] = df.index.date
         
         return df
@@ -72,9 +81,9 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (SL = TAMAÑO DE VELA)
+# 3. MOTOR DE BACKTESTING 
 # ==========================================
-def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext):
+def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, filtro_vol, mult_vol):
     operaciones = []
     if df.empty:
         return pd.DataFrame(operaciones)
@@ -106,21 +115,27 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext):
             distancia_long_pct = ((entrada - max_5min) / max_5min) * 100
             distancia_short_pct = ((min_5min - entrada) / min_5min) * 100
             
+            # Evaluación del Filtro de Volumen
+            volumen_valido = True
+            if filtro_vol and pd.notna(row['Vol_SMA']):
+                if row['Volume'] < (row['Vol_SMA'] * mult_vol):
+                    volumen_valido = False
+            
             tipo_trade = None
             
-            if entrada > max_5min:
+            # Condición LONG
+            if entrada > max_5min and volumen_valido:
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     if distancia_long_pct <= max_ext:
                         tipo_trade = 'Long 🟢'
-                        # El Stop Loss se ubica restando el tamaño total de la vela de ruptura
                         stop_loss = entrada - tamaño_vela 
                         take_profit = entrada + ((entrada - stop_loss) * ratio)
                     
-            elif entrada < min_5min:
+            # Condición SHORT
+            elif entrada < min_5min and volumen_valido:
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     if distancia_short_pct <= max_ext:
                         tipo_trade = 'Short 🔴'
-                        # El Stop Loss se ubica sumando el tamaño total de la vela de ruptura
                         stop_loss = entrada + tamaño_vela 
                         take_profit = entrada - ((stop_loss - entrada) * ratio)
             
@@ -151,7 +166,8 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext):
                     'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
                     'Stop Loss': stop_loss, 'Take Profit': take_profit,
                     'Resultado': resultado,
-                    'Max_ORB': max_5min, 'Min_ORB': min_5min
+                    'Max_ORB': max_5min, 'Min_ORB': min_5min,
+                    'Volumen': row['Volume'], 'Vol_SMA': row['Vol_SMA']
                 })
 
     return pd.DataFrame(operaciones)
@@ -162,12 +178,12 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext):
 st.title("📈 App de Estrategia ORB - Bitcoin (5 Minutos)")
 
 df_btc = obtener_datos_bingx(dias_historial)
-df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr, max_extension)
+df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr, max_extension, usar_volumen, multiplicador_vol)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
 elif df_operaciones.empty:
-    st.info("No se encontraron operaciones. El filtro de extensión máxima o la fuerza del cuerpo podrían estar muy estrictos.")
+    st.info("No se encontraron operaciones. El volumen exigido o la fuerza del cuerpo bloquean todas las entradas.")
 else:
     total_trades = len(df_operaciones)
     aciertos = len(df_operaciones[df_operaciones['Resultado'] == "Ganancia ✅"])
@@ -190,7 +206,10 @@ else:
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.2f}")
     
-    st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado']], use_container_width=True)
+    # Mostrar el volumen real vs el promedio en la tabla para auditar la operación
+    df_mostrar['Vol_Excedente'] = (df_mostrar['Volumen'] / df_mostrar['Vol_SMA']).apply(lambda x: f"{x:.2f}x")
+    
+    st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Vol_Excedente', 'Resultado']], use_container_width=True)
     
     st.divider()
     
