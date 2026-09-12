@@ -187,7 +187,6 @@ if df_btc.empty:
 elif df_operaciones.empty:
     st.info("No se encontraron operaciones. El filtro de expansión de vela podría estar bloqueando entradas con bajo momentum.")
 else:
-    # Ajustamos el contador para que lea correctamente cualquier tipo de ganancia/pérdida
     total_trades = len(df_operaciones)
     aciertos = len(df_operaciones[df_operaciones['Resultado'].str.contains("Ganancia")])
     fallos = len(df_operaciones[df_operaciones['Resultado'].str.contains("Pérdida")])
@@ -204,6 +203,10 @@ else:
     
     st.subheader("📋 Registro Detallado")
     df_mostrar = df_operaciones.copy()
+    
+    # Modificación para que el índice (conteo) inicie desde 1 en lugar de 0
+    df_mostrar.index = range(1, len(df_mostrar) + 1)
+    
     columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit']
     
     for col in columnas_moneda:
@@ -224,7 +227,6 @@ else:
         fecha_obj = trade_data['Fecha']
         dia_str = fecha_obj.strftime('%Y-%m-%d')
         
-        # Gráfico se ajusta para mostrar hasta las 16:30 y así poder visualizar el cierre forzado
         df_dia = df_btc.loc[f"{dia_str} 08:30:00":f"{dia_str} 16:30:00"]
         
         fig = go.Figure(data=[go.Candlestick(
