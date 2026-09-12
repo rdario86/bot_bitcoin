@@ -15,8 +15,8 @@ with st.sidebar.form(key='panel_ajustes'):
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
     
-    # Parámetros de Riesgo y Ruptura
-    stop_loss_pct = st.number_input("Stop Loss Fijo (%)", min_value=0.1, max_value=10.0, value=2.0, step=0.1)
+    # Parámetros de Riesgo y Ruptura (Stop Loss en 0.50%)
+    stop_loss_pct = st.number_input("Stop Loss Fijo (%)", min_value=0.05, max_value=10.0, value=0.50, step=0.05)
     min_ruptura = st.slider("Ruptura Mínima Exigida (%)", 0.05, 1.0, 0.1, 0.05, help="Distancia mínima que debe superar el cierre por encima/debajo del rango para considerarse una ruptura clara.")
     
     # Filtros de Vela
@@ -90,7 +90,6 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, min_rup, sl_pct):
     for fecha in fechas:
         df_dia = df[df['Date'] == fecha]
         
-        # Rango de 15 minutos (09:30 a 09:44 captura exactamente 3 velas de 5 min)
         rango_inicial = df_dia.between_time('09:30', '09:44')
         if rango_inicial.empty or len(rango_inicial) < 3:
             continue
@@ -98,7 +97,6 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, min_rup, sl_pct):
         max_15min = rango_inicial['High'].max()
         min_15min = rango_inicial['Low'].min()
         
-        # Horario operativo desde las 09:45
         horario_operativo = df_dia.between_time('09:45', '12:00')
         trade_registrado = False
         
@@ -111,13 +109,11 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, min_rup, sl_pct):
             tamaño_cuerpo = abs(row['Open'] - row['Close'])
             entrada = row['Close']
             
-            # Cálculo de la distancia porcentual de la ruptura
             distancia_long_pct = ((entrada - max_15min) / max_15min) * 100
             distancia_short_pct = ((min_15min - entrada) / min_15min) * 100
             
             tipo_trade = None
             
-            # Condición LONG 
             if entrada > max_15min:
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     if min_rup <= distancia_long_pct <= max_ext:
@@ -125,7 +121,6 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, min_rup, sl_pct):
                         stop_loss = entrada * (1 - (sl_pct / 100))
                         take_profit = entrada * (1 + ((sl_pct * ratio) / 100))
                     
-            # Condición SHORT 
             elif entrada < min_15min:
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     if min_rup <= distancia_short_pct <= max_ext:
