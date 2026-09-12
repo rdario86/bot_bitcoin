@@ -5,23 +5,17 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
-st.set_page_config(page_title="App Trading: ORB Bitcoin 5m", layout="wide")
+st.set_page_config(page_title="App Trading: ORB Bitcoin 30m", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ Ajustes ORB")
+    st.header("⚙️ Ajustes ORB (30 Minutos)")
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
     fuerza_cuerpo = st.slider("Fuerza de Ruptura (Cuerpo %)", 50, 100, 60, 5)
     max_extension = st.slider("Extensión Máx. de Entrada (%)", 0.1, 2.0, 0.5, 0.1)
-    
-    st.divider()
-    st.subheader("📊 Filtro de Volumen")
-    usar_volumen = st.checkbox("Exigir Ruptura con Alto Volumen", value=True)
-    # Multiplicador: 1.5 significa que la vela debe tener 50% más volumen que el promedio
-    multiplicador_vol = st.slider("Multiplicador (vs SMA 20)", 1.0, 5.0, 1.5, 0.1, help="Factor de volumen comparado con el promedio de las últimas 20 velas.")
     
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
@@ -69,9 +63,6 @@ def obtener_datos_bingx(dias):
         
         df.index = df.index.tz_localize('UTC').tz_convert('America/New_York')
         df = df[~df.index.duplicated(keep='first')]
-        
-        # Calcular Promedio Móvil Simple del Volumen (20 periodos)
-        df['Vol_SMA'] = df['Volume'].rolling(window=20).mean()
         df['Date'] = df.index.date
         
         return df
@@ -83,7 +74,7 @@ def obtener_datos_bingx(dias):
 # ==========================================
 # 3. MOTOR DE BACKTESTING 
 # ==========================================
-def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, filtro_vol, mult_vol):
+def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext):
     operaciones = []
     if df.empty:
         return pd.DataFrame(operaciones)
@@ -93,14 +84,16 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, filtro_vol, mult_vol):
     for fecha in fechas:
         df_dia = df[df['Date'] == fecha]
         
-        vela_apertura = df_dia.between_time('09:30', '09:30')
-        if vela_apertura.empty:
+        # Rango de 30 minutos (09:30 a 09:59 captura exactamente 6 velas de 5 min)
+        rango_inicial = df_dia.between_time('09:30', '09:59')
+        if rango_inicial.empty or len(rango_inicial) < 6:
             continue
             
-        max_5min = vela_apertura['High'].iloc[0]
-        min_5min = vela_apertura['Low'].iloc[0]
+        max_30min = rango_inicial['High'].max()
+        min_30min = rango_inicial['Low'].min()
         
-        horario_operativo = df_dia.between_time('09:35', '10:00')
+        # Horario operativo expandido hasta el mediodía para permitir desarrollo
+        horario_operativo = df_dia.between_time('10:00', '12:00')
         trade_registrado = False
         
         for idx, row in horario_operativo.iterrows():
@@ -112,31 +105,27 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, filtro_vol, mult_vol):
             tamaño_cuerpo = abs(row['Open'] - row['Close'])
             entrada = row['Close']
             
-            distancia_long_pct = ((entrada - max_5min) / max_5min) * 100
-            distancia_short_pct = ((min_5min - entrada) / min_5min) * 100
-            
-            # Evaluación del Filtro de Volumen
-            volumen_valido = True
-            if filtro_vol and pd.notna(row['Vol_SMA']):
-                if row['Volume'] < (row['Vol_SMA'] * mult_vol):
-                    volumen_valido = False
+            distancia_long_pct = ((entrada - max_30min) / max_30min) * 100
+            distancia_short_pct = ((min_30min - entrada) / min_30min) * 100
             
             tipo_trade = None
             
             # Condición LONG
-            if entrada > max_5min and volumen_valido:
+            if entrada > max_30min:
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     if distancia_long_pct <= max_ext:
                         tipo_trade = 'Long 🟢'
-                        stop_loss = entrada - tamaño_vela 
+                        # Stop Loss en el último mínimo de la vela de ruptura
+                        stop_loss = row['Low'] 
                         take_profit = entrada + ((entrada - stop_loss) * ratio)
                     
             # Condición SHORT
-            elif entrada < min_5min and volumen_valido:
+            elif entrada < min_30min:
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     if distancia_short_pct <= max_ext:
                         tipo_trade = 'Short 🔴'
-                        stop_loss = entrada + tamaño_vela 
+                        # Stop Loss en el último máximo de la vela de ruptura
+                        stop_loss = row['High'] 
                         take_profit = entrada - ((stop_loss - entrada) * ratio)
             
             if tipo_trade:
@@ -166,8 +155,7 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, filtro_vol, mult_vol):
                     'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
                     'Stop Loss': stop_loss, 'Take Profit': take_profit,
                     'Resultado': resultado,
-                    'Max_ORB': max_5min, 'Min_ORB': min_5min,
-                    'Volumen': row['Volume'], 'Vol_SMA': row['Vol_SMA']
+                    'Max_ORB': max_30min, 'Min_ORB': min_30min
                 })
 
     return pd.DataFrame(operaciones)
@@ -175,15 +163,15 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext, filtro_vol, mult_vol):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("📈 App de Estrategia ORB - Bitcoin (5 Minutos)")
+st.title("📈 App de Estrategia ORB - Bitcoin (Rango 30 Minutos)")
 
 df_btc = obtener_datos_bingx(dias_historial)
-df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr, max_extension, usar_volumen, multiplicador_vol)
+df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr, max_extension)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
 elif df_operaciones.empty:
-    st.info("No se encontraron operaciones. El volumen exigido o la fuerza del cuerpo bloquean todas las entradas.")
+    st.info("No se encontraron operaciones con los filtros de cuerpo y extensión de ruptura.")
 else:
     total_trades = len(df_operaciones)
     aciertos = len(df_operaciones[df_operaciones['Resultado'] == "Ganancia ✅"])
@@ -206,10 +194,7 @@ else:
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.2f}")
     
-    # Mostrar el volumen real vs el promedio en la tabla para auditar la operación
-    df_mostrar['Vol_Excedente'] = (df_mostrar['Volumen'] / df_mostrar['Vol_SMA']).apply(lambda x: f"{x:.2f}x")
-    
-    st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Vol_Excedente', 'Resultado']], use_container_width=True)
+    st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado']], use_container_width=True)
     
     st.divider()
     
@@ -222,7 +207,8 @@ else:
         fecha_obj = trade_data['Fecha']
         dia_str = fecha_obj.strftime('%Y-%m-%d')
         
-        df_dia = df_btc.loc[f"{dia_str} 09:00:00":f"{dia_str} 11:30:00"]
+        # Gráfico se ajusta para mostrar todo el rango extendido
+        df_dia = df_btc.loc[f"{dia_str} 09:00:00":f"{dia_str} 13:00:00"]
         
         fig = go.Figure(data=[go.Candlestick(
             x=df_dia.index,
@@ -231,8 +217,8 @@ else:
             name='BTC/USDT'
         )])
         
-        fig.add_hline(y=trade_data['Max_ORB'], line_dash="dash", line_color="blue", annotation_text="Max 5m (09:30)")
-        fig.add_hline(y=trade_data['Min_ORB'], line_dash="dash", line_color="blue", annotation_text="Min 5m (09:30)")
+        fig.add_hline(y=trade_data['Max_ORB'], line_dash="dash", line_color="blue", annotation_text="Max 30m (09:30-10:00)")
+        fig.add_hline(y=trade_data['Min_ORB'], line_dash="dash", line_color="blue", annotation_text="Min 30m (09:30-10:00)")
         
         color_flecha = "green" if "Long" in trade_data['Tipo'] else "red"
         simbolo_flecha = "triangle-up" if "Long" in trade_data['Tipo'] else "triangle-down"
@@ -243,7 +229,7 @@ else:
             marker=dict(symbol=simbolo_flecha, size=15, color=color_flecha)
         ))
         
-        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (1 Vela)")
+        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Mínimo de Ruptura)")
         fig.add_hline(y=trade_data['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
         
         fig.update_layout(
