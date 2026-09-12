@@ -8,15 +8,15 @@ import time
 st.set_page_config(page_title="App Trading: ORB Bitcoin 5m", layout="wide")
 
 # ==========================================
-# 1. PARÁMETROS DE LA ESTRATEGIA (RUPTURA SÓLIDA)
+# 1. PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ Ajustes ORB (Cuerpo)")
+    st.header("⚙️ Ajustes ORB")
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
-    riesgo_porcentaje = st.slider("Riesgo por Operación (%)", 1.0, 3.0, 1.0, 0.5)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
-    # El slider ahora arranca en 50% garantizando que el cuerpo es mayor que las mechas
-    fuerza_cuerpo = st.slider("Fuerza de Ruptura (Cuerpo %)", 50, 100, 60, 5, help="Porcentaje de la vela que debe ser cuerpo sólido.")
+    fuerza_cuerpo = st.slider("Fuerza de Ruptura (Cuerpo %)", 50, 100, 60, 5)
+    max_extension = st.slider("Extensión Máx. de Entrada (%)", 0.1, 2.0, 0.5, 0.1, help="Distancia máxima permitida entre la línea de ruptura y el cierre de la vela. Si es mayor, no se opera para evitar Stop Loss gigantes.")
+    
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
 # ==========================================
@@ -52,7 +52,6 @@ def obtener_datos_bingx(dias):
                 time.sleep(0.1) 
                 
             except Exception as limite_api:
-                print(f"Límite histórico alcanzado por la API: {limite_api}")
                 break
                 
         if not todas_las_velas:
@@ -73,9 +72,9 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (ACCIÓN DE PRECIO Y CUERPO)
+# 3. MOTOR DE BACKTESTING 
 # ==========================================
-def ejecutar_backtest(df, pct_cuerpo, ratio):
+def ejecutar_backtest(df, pct_cuerpo, ratio, max_ext):
     operaciones = []
     if df.empty:
         return pd.DataFrame(operaciones)
@@ -103,26 +102,27 @@ def ejecutar_backtest(df, pct_cuerpo, ratio):
             tamaño_vela = row['High'] - row['Low']
             if tamaño_vela == 0: continue
                 
-            # Cálculo del tamaño del cuerpo (diferencia absoluta entre Apertura y Cierre)
             tamaño_cuerpo = abs(row['Open'] - row['Close'])
+            entrada = row['Close']
+            
+            distancia_long_pct = ((entrada - max_5min) / max_5min) * 100
+            distancia_short_pct = ((min_5min - entrada) / min_5min) * 100
             
             tipo_trade = None
             
-            # Condición LONG (El cierre supera el máximo y la vela tiene cuerpo fuerte)
-            if row['Close'] > max_5min:
+            if entrada > max_5min:
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
-                    tipo_trade = 'Long 🟢'
-                    entrada = row['Close'] # Entrar al cierre de esa vela confirmada
-                    stop_loss = mitad_rango 
-                    take_profit = entrada + ((entrada - stop_loss) * ratio)
+                    if distancia_long_pct <= max_ext:
+                        tipo_trade = 'Long 🟢'
+                        stop_loss = mitad_rango 
+                        take_profit = entrada + ((entrada - stop_loss) * ratio)
                     
-            # Condición SHORT (El cierre rompe el mínimo y la vela tiene cuerpo fuerte)
-            elif row['Close'] < min_5min:
+            elif entrada < min_5min:
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
-                    tipo_trade = 'Short 🔴'
-                    entrada = row['Close'] # Entrar al cierre de esa vela confirmada
-                    stop_loss = mitad_rango 
-                    take_profit = entrada - ((stop_loss - entrada) * ratio)
+                    if distancia_short_pct <= max_ext:
+                        tipo_trade = 'Short 🔴'
+                        stop_loss = mitad_rango 
+                        take_profit = entrada - ((stop_loss - entrada) * ratio)
             
             if tipo_trade:
                 trade_registrado = True
@@ -130,7 +130,6 @@ def ejecutar_backtest(df, pct_cuerpo, ratio):
                 
                 df_post_entrada = df_dia.loc[idx:]
                 for jdx, vela in df_post_entrada.iterrows():
-                    # Ignoramos la vela de entrada para el cálculo de resultados
                     if jdx == idx: continue 
                     
                     if "Long" in tipo_trade:
@@ -163,12 +162,12 @@ def ejecutar_backtest(df, pct_cuerpo, ratio):
 st.title("📈 App de Estrategia ORB - Bitcoin (5 Minutos)")
 
 df_btc = obtener_datos_bingx(dias_historial)
-df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr)
+df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr, max_extension)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
 elif df_operaciones.empty:
-    st.info("No se encontraron operaciones con estos parámetros en velas de 5 minutos.")
+    st.info("No se encontraron operaciones. El filtro de extensión máxima o la fuerza del cuerpo podrían estar muy estrictos.")
 else:
     total_trades = len(df_operaciones)
     aciertos = len(df_operaciones[df_operaciones['Resultado'] == "Ganancia ✅"])
