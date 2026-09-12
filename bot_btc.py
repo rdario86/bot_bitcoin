@@ -10,7 +10,7 @@ st.set_page_config(page_title="App Trading: ORB Bitcoin", layout="wide")
 # 1. PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ Ajustes ORB")
+    st.header("⚙️ Ajustes ORB (Sin Indicadores)")
     dias_historial = st.slider("Días de Backtesting", 1, 30, 7)
     riesgo_porcentaje = st.slider("Riesgo por Operación (%)", 1.0, 3.0, 1.0, 0.5)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
@@ -18,7 +18,7 @@ with st.sidebar.form(key='panel_ajustes'):
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
 # ==========================================
-# 2. CONEXIÓN A BINGX 
+# 2. CONEXIÓN A BINGX (SIN VWAP)
 # ==========================================
 @st.cache_data(ttl=300, show_spinner="Descargando datos de BingX Futuros...")
 def obtener_datos_bingx(dias):
@@ -53,13 +53,7 @@ def obtener_datos_bingx(dias):
         
         df.index = df.index.tz_localize('UTC').tz_convert('America/New_York')
         df = df[~df.index.duplicated(keep='first')]
-        
         df['Date'] = df.index.date
-        df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
-        df['Vol_x_TP'] = df['Typical_Price'] * df['Volume']
-        df['Cum_Vol'] = df.groupby('Date')['Volume'].cumsum()
-        df['Cum_Vol_x_TP'] = df.groupby('Date')['Vol_x_TP'].cumsum()
-        df['VWAP'] = df['Cum_Vol_x_TP'] / df['Cum_Vol']
         
         return df
     
@@ -68,7 +62,7 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING CON SIMULACIÓN DE CIERRE
+# 3. MOTOR DE BACKTESTING (PURA ACCIÓN DEL PRECIO)
 # ==========================================
 def ejecutar_backtest(df, pct_rechazo, ratio):
     operaciones = []
@@ -103,14 +97,16 @@ def ejecutar_backtest(df, pct_rechazo, ratio):
             
             tipo_trade = None
             
-            if row['Close'] > max_5min and row['Close'] > row['VWAP']:
+            # Condición LONG (Ruptura del máximo de 5 min)
+            if row['Close'] > max_5min:
                 if (mecha_inf / tamaño_vela) >= (pct_rechazo / 100):
                     tipo_trade = 'Long 🟢'
                     entrada = row['High']
                     stop_loss = row['Low'] 
                     take_profit = entrada + ((entrada - stop_loss) * ratio)
                     
-            elif row['Close'] < min_5min and row['Close'] < row['VWAP']:
+            # Condición SHORT (Ruptura del mínimo de 5 min)
+            elif row['Close'] < min_5min:
                 if (mecha_sup / tamaño_vela) >= (pct_rechazo / 100):
                     tipo_trade = 'Short 🔴'
                     entrada = row['Low']
@@ -121,7 +117,7 @@ def ejecutar_backtest(df, pct_rechazo, ratio):
                 trade_registrado = True
                 resultado = "Sin Resolución ⏳"
                 
-                # Simular evolución del precio el resto del día para definir el resultado
+                # Simular evolución del precio
                 df_post_entrada = df_dia.loc[idx:]
                 for jdx, vela in df_post_entrada.iterrows():
                     if "Long" in tipo_trade:
@@ -149,7 +145,7 @@ def ejecutar_backtest(df, pct_rechazo, ratio):
     return pd.DataFrame(operaciones)
 
 # ==========================================
-# 4. INTERFAZ Y RESULTADOS FORMATADOS
+# 4. INTERFAZ Y RESULTADOS
 # ==========================================
 st.title("📈 App de Estrategia ORB - Bitcoin")
 
@@ -161,7 +157,6 @@ if df_btc.empty:
 elif df_operaciones.empty:
     st.info("No se encontraron operaciones con estos parámetros.")
 else:
-    # 4.1 Resumen de Operaciones
     total_trades = len(df_operaciones)
     aciertos = len(df_operaciones[df_operaciones['Resultado'] == "Ganancia ✅"])
     fallos = len(df_operaciones[df_operaciones['Resultado'] == "Pérdida ❌"])
@@ -176,10 +171,7 @@ else:
     
     st.divider()
     
-    # 4.2 Formato de la Tabla
     st.subheader("📋 Registro Detallado")
-    
-    # Copiar dataframe para aplicar formato visual de moneda sin alterar los datos originales
     df_mostrar = df_operaciones.copy()
     columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit']
     
@@ -190,7 +182,6 @@ else:
     
     st.divider()
     
-    # 4.3 Gráfico Interactivo
     st.subheader("🔍 Visualizador de Operaciones")
     opciones_trades = df_operaciones['Fecha'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist()
     trade_seleccionado = st.selectbox("Selecciona la fecha del Trade:", opciones_trades)
@@ -209,7 +200,6 @@ else:
             name='BTC/USDT'
         )])
         
-        fig.add_trace(go.Scatter(x=df_dia.index, y=df_dia['VWAP'], mode='lines', name='VWAP', line=dict(color='orange', width=1.5)))
         fig.add_hline(y=trade_data['Max_ORB'], line_dash="dash", line_color="blue", annotation_text="Max 5m (09:30)")
         fig.add_hline(y=trade_data['Min_ORB'], line_dash="dash", line_color="blue", annotation_text="Min 5m (09:30)")
         
