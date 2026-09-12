@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
-st.set_page_config(page_title="App Trading: ORB Bitcoin 15m (Estructural)", layout="wide")
+st.set_page_config(page_title="App Trading: ORB Bitcoin 15m", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA (MINIMALISTA)
