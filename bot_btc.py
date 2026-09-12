@@ -9,10 +9,17 @@ import time
 st.set_page_config(page_title="BOT Estrategia ORB - Bitcoin", layout="wide")
 
 # ==========================================
-# 1. PARÁMETROS DE LA ESTRATEGIA (MINIMALISTA)
+# 1. PARÁMETROS DE LA ESTRATEGIA Y CAPITAL
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
     st.header("⚙️ Ajustes ORB (15 Min)")
+    
+    # Nuevos parámetros de gestión de capital
+    st.subheader("💰 Gestión de Capital")
+    capital_inicial = st.number_input("Bank / Capital Inicial ($)", min_value=100.0, value=1000.0, step=100.0)
+    riesgo_pct = st.selectbox("Riesgo por Operación (%)", options=[1, 2, 3, 4, 5], index=0, help="Porcentaje del balance actual que se arriesgará en caso de tocar el Stop Loss.")
+    
+    st.divider()
     
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", min_value=0.1, value=2.0, step=0.1)
@@ -72,9 +79,9 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (ESTRUCTURA + FILTRO DE 10 VELAS + CIERRE 16:00)
+# 3. MOTOR DE BACKTESTING CON GESTIÓN DE CAPITAL
 # ==========================================
-def ejecutar_backtest(df, ratio):
+def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
     if df.empty:
         return pd.DataFrame(operaciones)
@@ -82,12 +89,13 @@ def ejecutar_backtest(df, ratio):
     df_calc = df.copy()
     df_calc['Tamaño_Vela'] = df_calc['High'] - df_calc['Low']
     
-    # Filtro fijo de expansión: Promedio de las últimas 10 velas
     periodos_x = 10
     df_calc['Promedio_Tamaño_10'] = df_calc['Tamaño_Vela'].shift(1).rolling(window=periodos_x).mean()
         
     fechas = df_calc['Date'].unique()
     hora_cierre_tiempo = pd.to_datetime('16:00').time()
+    
+    capital_actual = capital_inicial
     
     for fecha in fechas:
         df_dia = df_calc[df_calc['Date'] == fecha]
@@ -107,32 +115,31 @@ def ejecutar_backtest(df, ratio):
             promedio_anterior = row['Promedio_Tamaño_10']
             tipo_trade = None
             
-            # DETECCIÓN DE RUPTURA HACIA ARRIBA (LONG)
             if entrada > max_orb:
-                # Exigencia matemática permanente: Vela actual > Promedio de las 10 anteriores
                 if pd.notna(promedio_anterior):
                     if tamaño_actual <= promedio_anterior:
                         continue 
                         
                 tipo_trade = 'Long 🟢'
                 stop_loss = min_orb 
-                riesgo = entrada - stop_loss
-                take_profit = entrada + (riesgo * ratio)
+                riesgo_precio = entrada - stop_loss
+                take_profit = entrada + (riesgo_precio * ratio)
                     
-            # DETECCIÓN DE RUPTURA HACIA ABAJO (SHORT)
             elif entrada < min_orb:
-                # Exigencia matemática permanente: Vela actual > Promedio de las 10 anteriores
                 if pd.notna(promedio_anterior):
                     if tamaño_actual <= promedio_anterior:
                         continue 
                         
                 tipo_trade = 'Short 🔴'
                 stop_loss = max_orb 
-                riesgo = stop_loss - entrada
-                take_profit = entrada - (riesgo * ratio)
+                riesgo_precio = stop_loss - entrada
+                take_profit = entrada - (riesgo_precio * ratio)
                 
             if tipo_trade:
                 resultado = "Sin Resolución ⏳"
+                pnl_usd = 0.0
+                riesgo_usd = capital_actual * (riesgo_pct / 100)
+                
                 df_post_entrada = df_dia.loc[idx:]
                 
                 for jdx, vela in df_post_entrada.iterrows():
@@ -142,33 +149,49 @@ def ejecutar_backtest(df, ratio):
                     if jdx.time() >= hora_cierre_tiempo:
                         precio_cierre = vela['Open']
                         if "Long" in tipo_trade:
-                            resultado = "Ganancia (16:00) ⏱️✅" if precio_cierre > entrada else "Pérdida (16:00) ⏱️❌"
+                            distancia_recorrida = precio_cierre - entrada
                         else:
-                            resultado = "Ganancia (16:00) ⏱️✅" if precio_cierre < entrada else "Pérdida (16:00) ⏱️❌"
+                            distancia_recorrida = entrada - precio_cierre
+                            
+                        # Calcular PnL proporcional al avance hasta las 16:00
+                        pnl_usd = (distancia_recorrida / riesgo_precio) * riesgo_usd
+                        
+                        if pnl_usd > 0:
+                            resultado = "Ganancia (16:00) ⏱️✅"
+                        else:
+                            resultado = "Pérdida (16:00) ⏱️❌"
                         break
                     
                     # 2. Validación normal de TP / SL
                     if "Long" in tipo_trade:
                         if vela['Low'] <= stop_loss:
                             resultado = "Pérdida ❌"
+                            pnl_usd = -riesgo_usd
                             break
                         elif vela['High'] >= take_profit:
                             resultado = "Ganancia ✅"
+                            pnl_usd = riesgo_usd * ratio
                             break
                     else: 
                         if vela['High'] >= stop_loss:
                             resultado = "Pérdida ❌"
+                            pnl_usd = -riesgo_usd
                             break
                         elif vela['Low'] <= take_profit:
                             resultado = "Ganancia ✅"
+                            pnl_usd = riesgo_usd * ratio
                             break
+                
+                # Actualizar el capital de la cuenta con el resultado del trade
+                capital_actual += pnl_usd
                 
                 operaciones.append({
                     'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
                     'Stop Loss': stop_loss, 'Take Profit': take_profit,
                     'Resultado': resultado,
                     'Max_ORB': max_orb, 'Min_ORB': min_orb,
-                    'Vela_Ruptura': tamaño_actual, 'Promedio_10_Velas': promedio_anterior
+                    'Vela_Ruptura': tamaño_actual, 'Promedio_10_Velas': promedio_anterior,
+                    'PnL ($)': pnl_usd, 'Balance': capital_actual
                 })
                 
                 break 
@@ -178,11 +201,10 @@ def ejecutar_backtest(df, ratio):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-# Título principal de la aplicación actualizado
 st.title("📈 BOT Estrategia ORB - Bitcoin")
 
 df_btc = obtener_datos_bingx(dias_historial)
-df_operaciones = ejecutar_backtest(df_btc, ratio_rr)
+df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
@@ -194,12 +216,25 @@ else:
     fallos = len(df_operaciones[df_operaciones['Resultado'].str.contains("Pérdida")])
     win_rate = (aciertos / total_trades) * 100 if total_trades > 0 else 0
     
-    st.subheader("📊 Resumen de Rendimiento")
+    balance_final = df_operaciones['Balance'].iloc[-1]
+    ganancia_neta = balance_final - capital_inicial
+    rentabilidad = (ganancia_neta / capital_inicial) * 100
+    
+    st.subheader("📊 Resumen de Rendimiento y Rentabilidad")
+    
+    # Primera fila de métricas (Estadísticas del sistema)
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Operaciones", total_trades)
     col2.metric("Aciertos ✅", aciertos)
     col3.metric("Fallos ❌", fallos)
     col4.metric("% Win Rate", f"{win_rate:.1f}%")
+    
+    # Segunda fila de métricas (Dinero)
+    col5, col6, col7, col8 = st.columns(4)
+    col5.metric("Capital Inicial", f"${capital_inicial:,.2f}")
+    col6.metric("Balance Final", f"${balance_final:,.2f}", delta=f"${ganancia_neta:,.2f}")
+    col7.metric("Ganancia/Pérdida Neta ($)", f"${ganancia_neta:,.2f}", delta_color="normal" if ganancia_neta >= 0 else "inverse")
+    col8.metric("Rentabilidad (%)", f"{rentabilidad:.2f}%")
     
     st.divider()
     
@@ -208,14 +243,15 @@ else:
     
     df_mostrar.index = range(1, len(df_mostrar) + 1)
     
-    columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit']
-    
+    columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit', 'PnL ($)', 'Balance']
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.2f}")
         
     df_mostrar['Expansión'] = (df_mostrar['Vela_Ruptura'] / df_mostrar['Promedio_10_Velas']).apply(lambda x: f"{x:.2f}x el prom.")
     
-    st.dataframe(df_mostrar[['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Expansión', 'Resultado']], use_container_width=True)
+    # Reordenar las columnas para una mejor lectura financiera
+    columnas_finales = ['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Expansión', 'Resultado', 'PnL ($)', 'Balance']
+    st.dataframe(df_mostrar[columnas_finales], use_container_width=True)
     
     st.divider()
     
