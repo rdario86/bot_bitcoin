@@ -11,7 +11,8 @@ st.set_page_config(page_title="App Trading: ORB Bitcoin 5m", layout="wide")
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
     st.header("⚙️ Ajustes ORB (5 Minutos)")
-    dias_historial = st.slider("Días de Backtesting", 1, 30, 7)
+    # Slider ajustado a un máximo de 90 días, con 30 días por defecto
+    dias_historial = st.slider("Días de Backtesting", 1, 90, 30)
     riesgo_porcentaje = st.slider("Riesgo por Operación (%)", 1.0, 3.0, 1.0, 0.5)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
     fuerza_rechazo = st.slider("Rechazo Mínimo de Mecha (%)", 30, 80, 50, 5)
@@ -36,12 +37,11 @@ def obtener_datos_bingx(dias):
         limite_velas = 1000 
         
         while True:
-            # Extracción configurada a velas de 5 minutos
             velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='5m', since=since, limit=limite_velas)
             if not velas:
                 break
             todas_las_velas.extend(velas)
-            since = velas[-1][0] + 300000 # Avanzar 5 minutos en milisegundos
+            since = velas[-1][0] + 300000 
             if len(velas) < limite_velas:
                 break 
                 
@@ -75,7 +75,6 @@ def ejecutar_backtest(df, pct_rechazo, ratio):
     for fecha in fechas:
         df_dia = df[df['Date'] == fecha]
         
-        # Aislar únicamente la vela de las 09:30
         vela_apertura = df_dia.between_time('09:30', '09:30')
         if vela_apertura.empty:
             continue
@@ -83,10 +82,8 @@ def ejecutar_backtest(df, pct_rechazo, ratio):
         max_5min = vela_apertura['High'].iloc[0]
         min_5min = vela_apertura['Low'].iloc[0]
         
-        # Calcular la mitad exacta del rango
         mitad_rango = (max_5min + min_5min) / 2
         
-        # Buscar entradas desde la vela de las 09:35 en adelante
         horario_operativo = df_dia.between_time('09:35', '10:00')
         trade_registrado = False
         
@@ -103,20 +100,18 @@ def ejecutar_backtest(df, pct_rechazo, ratio):
             
             tipo_trade = None
             
-            # Condición LONG 
             if row['Close'] > max_5min:
                 if (mecha_inf / tamaño_vela) >= (pct_rechazo / 100):
                     tipo_trade = 'Long 🟢'
                     entrada = row['High']
-                    stop_loss = mitad_rango # SL fijado a la mitad del rango
+                    stop_loss = mitad_rango 
                     take_profit = entrada + ((entrada - stop_loss) * ratio)
                     
-            # Condición SHORT 
             elif row['Close'] < min_5min:
                 if (mecha_sup / tamaño_vela) >= (pct_rechazo / 100):
                     tipo_trade = 'Short 🔴'
                     entrada = row['Low']
-                    stop_loss = mitad_rango # SL fijado a la mitad del rango
+                    stop_loss = mitad_rango 
                     take_profit = entrada - ((stop_loss - entrada) * ratio)
             
             if tipo_trade:
