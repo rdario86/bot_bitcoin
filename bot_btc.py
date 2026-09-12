@@ -16,18 +16,15 @@ with st.sidebar.form(key='panel_ajustes'):
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
     
     st.divider()
-    st.subheader("📏 Filtros de Ruptura")
-    # Stop Loss predeterminado al 0.50%
+    st.subheader("📏 Filtros de Ruptura (First Strike)")
     stop_loss_pct = st.number_input("Stop Loss Fijo (%)", min_value=0.05, max_value=10.0, value=0.50, step=0.05)
     
-    # Filtro: Rango de ruptura basado en el cuerpo de la vela
     rango_ruptura = st.slider(
         "Ruptura (% del Cuerpo por fuera)", 
         5, 100, (25, 50), 5, 
-        help="Exige que la parte del cuerpo que rompe la línea represente entre un 25% y 50% del total del cuerpo de la vela."
+        help="Exige que la parte del cuerpo que rompe la línea represente entre un 25% y 50% del total. Si la PRIMERA vela que rompe no cumple esto, no se opera ese día."
     )
     
-    # Validación de que la vela sea sólida y no un Doji
     fuerza_cuerpo = st.slider("Fuerza de la Vela (Cuerpo vs Mechas %)", 50, 100, 60, 5)
     
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
@@ -85,7 +82,7 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING 
+# 3. MOTOR DE BACKTESTING (REGLA FIRST STRIKE)
 # ==========================================
 def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
     operaciones = []
@@ -97,7 +94,6 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
     for fecha in fechas:
         df_dia = df[df['Date'] == fecha]
         
-        # Rango de 30 minutos (09:30 a 09:59 captura exactamente 6 velas de 5 min)
         rango_inicial = df_dia.between_time('09:30', '09:59')
         if rango_inicial.empty or len(rango_inicial) < 6:
             continue
@@ -105,13 +101,10 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
         max_30min = rango_inicial['High'].max()
         min_30min = rango_inicial['Low'].min()
         
-        # Horario operativo desde las 10:00
         horario_operativo = df_dia.between_time('10:00', '12:00')
-        trade_registrado = False
         
+        # Bucle para escanear las velas de la sesión
         for idx, row in horario_operativo.iterrows():
-            if trade_registrado: break 
-            
             tamaño_vela = row['High'] - row['Low']
             if tamaño_vela == 0: continue
                 
@@ -121,62 +114,79 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
             entrada = row['Close']
             tipo_trade = None
             
-            # Condición LONG 
+            # DETECCIÓN DE LA PRIMERA RUPTURA HACIA ARRIBA
             if entrada > max_30min:
-                # Calcula cuánto del cuerpo quedó por encima de la línea del rango
                 parte_fuera = entrada - max_30min
                 pct_fuera = (parte_fuera / tamaño_cuerpo) * 100
                 
-                # Exige que la vela tenga buen cuerpo (vs las mechas)
+                # ¿Cumple los filtros estrictos?
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
-                    # Exige que la ruptura del cuerpo esté entre el 25% y 50%
                     if rango_rup[0] <= pct_fuera <= rango_rup[1]:
                         tipo_trade = 'Long 🟢'
                         stop_loss = entrada * (1 - (sl_pct / 100))
                         take_profit = entrada * (1 + ((sl_pct * ratio) / 100))
-                    
-            # Condición SHORT 
-            elif entrada < min_30min:
-                # Calcula cuánto del cuerpo quedó por debajo de la línea del rango
-                parte_fuera = min_30min - entrada
-                pct_fuera = (parte_fuera / tamaño_cuerpo) * 100
                 
-                if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
-                    if rango_rup[0] <= pct_fuera <= rango_rup[1]:
-                        tipo_trade = 'Short 🔴'
-                        stop_loss = entrada * (1 + (sl_pct / 100))
-                        take_profit = entrada * (1 - ((sl_pct * ratio) / 100))
-            
-            if tipo_trade:
-                trade_registrado = True
-                resultado = "Sin Resolución ⏳"
-                
-                df_post_entrada = df_dia.loc[idx:]
-                for jdx, vela in df_post_entrada.iterrows():
-                    if jdx == idx: continue 
-                    
-                    if "Long" in tipo_trade:
+                # Si cumplió, corremos la simulación
+                if tipo_trade:
+                    resultado = "Sin Resolución ⏳"
+                    df_post_entrada = df_dia.loc[idx:]
+                    for jdx, vela in df_post_entrada.iterrows():
+                        if jdx == idx: continue 
+                        
                         if vela['Low'] <= stop_loss:
                             resultado = "Pérdida ❌"
                             break
                         elif vela['High'] >= take_profit:
                             resultado = "Ganancia ✅"
                             break
-                    else: 
+                    
+                    operaciones.append({
+                        'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
+                        'Stop Loss': stop_loss, 'Take Profit': take_profit,
+                        'Resultado': resultado,
+                        'Max_ORB': max_30min, 'Min_ORB': min_30min,
+                        'Pct_Ruptura': pct_fuera
+                    })
+                    
+                # Haya cumplido o no los filtros, esta fue la primera ruptura del día
+                break # Rompe el ciclo operativo de este día y pasa a la fecha siguiente
+                    
+            # DETECCIÓN DE LA PRIMERA RUPTURA HACIA ABAJO
+            elif entrada < min_30min:
+                parte_fuera = min_30min - entrada
+                pct_fuera = (parte_fuera / tamaño_cuerpo) * 100
+                
+                # ¿Cumple los filtros estrictos?
+                if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
+                    if rango_rup[0] <= pct_fuera <= rango_rup[1]:
+                        tipo_trade = 'Short 🔴'
+                        stop_loss = entrada * (1 + (sl_pct / 100))
+                        take_profit = entrada * (1 - ((sl_pct * ratio) / 100))
+                
+                # Si cumplió, corremos la simulación
+                if tipo_trade:
+                    resultado = "Sin Resolución ⏳"
+                    df_post_entrada = df_dia.loc[idx:]
+                    for jdx, vela in df_post_entrada.iterrows():
+                        if jdx == idx: continue 
+                        
                         if vela['High'] >= stop_loss:
                             resultado = "Pérdida ❌"
                             break
                         elif vela['Low'] <= take_profit:
                             resultado = "Ganancia ✅"
                             break
-                
-                operaciones.append({
-                    'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
-                    'Stop Loss': stop_loss, 'Take Profit': take_profit,
-                    'Resultado': resultado,
-                    'Max_ORB': max_30min, 'Min_ORB': min_30min,
-                    'Pct_Ruptura': pct_fuera
-                })
+                    
+                    operaciones.append({
+                        'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
+                        'Stop Loss': stop_loss, 'Take Profit': take_profit,
+                        'Resultado': resultado,
+                        'Max_ORB': max_30min, 'Min_ORB': min_30min,
+                        'Pct_Ruptura': pct_fuera
+                    })
+                    
+                # Haya cumplido o no los filtros, esta fue la primera ruptura del día
+                break # Rompe el ciclo operativo de este día y pasa a la fecha siguiente
 
     return pd.DataFrame(operaciones)
 
@@ -191,7 +201,7 @@ df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr, rango_ruptur
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
 elif df_operaciones.empty:
-    st.info("No se encontraron operaciones con los filtros de ruptura actuales. Intenta ampliar el rango de porcentaje de cuerpo.")
+    st.info("No se encontraron operaciones válidas. La regla 'First Strike' descartó los días donde la primera ruptura no cumplió los requisitos.")
 else:
     total_trades = len(df_operaciones)
     aciertos = len(df_operaciones[df_operaciones['Resultado'] == "Ganancia ✅"])
