@@ -8,15 +8,15 @@ import time
 st.set_page_config(page_title="App Trading: ORB Bitcoin 5m", layout="wide")
 
 # ==========================================
-# 1. PARÁMETROS DE LA ESTRATEGIA
+# 1. PARÁMETROS DE LA ESTRATEGIA (RUPTURA SÓLIDA)
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ Ajustes ORB (5 Minutos)")
-    # Límite estricto de 45 días para evitar colapsos de la API
+    st.header("⚙️ Ajustes ORB (Cuerpo)")
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     riesgo_porcentaje = st.slider("Riesgo por Operación (%)", 1.0, 3.0, 1.0, 0.5)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
-    fuerza_rechazo = st.slider("Rechazo Mínimo de Mecha (%)", 30, 80, 50, 5)
+    # El slider ahora arranca en 50% garantizando que el cuerpo es mayor que las mechas
+    fuerza_cuerpo = st.slider("Fuerza de Ruptura (Cuerpo %)", 50, 100, 60, 5, help="Porcentaje de la vela que debe ser cuerpo sólido.")
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
 # ==========================================
@@ -73,9 +73,9 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (SL EN 50% DEL RANGO)
+# 3. MOTOR DE BACKTESTING (ACCIÓN DE PRECIO Y CUERPO)
 # ==========================================
-def ejecutar_backtest(df, pct_rechazo, ratio):
+def ejecutar_backtest(df, pct_cuerpo, ratio):
     operaciones = []
     if df.empty:
         return pd.DataFrame(operaciones)
@@ -103,24 +103,24 @@ def ejecutar_backtest(df, pct_rechazo, ratio):
             tamaño_vela = row['High'] - row['Low']
             if tamaño_vela == 0: continue
                 
-            cuerpo_max = max(row['Open'], row['Close'])
-            cuerpo_min = min(row['Open'], row['Close'])
-            mecha_inf = cuerpo_min - row['Low']
-            mecha_sup = row['High'] - cuerpo_max
+            # Cálculo del tamaño del cuerpo (diferencia absoluta entre Apertura y Cierre)
+            tamaño_cuerpo = abs(row['Open'] - row['Close'])
             
             tipo_trade = None
             
+            # Condición LONG (El cierre supera el máximo y la vela tiene cuerpo fuerte)
             if row['Close'] > max_5min:
-                if (mecha_inf / tamaño_vela) >= (pct_rechazo / 100):
+                if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     tipo_trade = 'Long 🟢'
-                    entrada = row['High']
+                    entrada = row['Close'] # Entrar al cierre de esa vela confirmada
                     stop_loss = mitad_rango 
                     take_profit = entrada + ((entrada - stop_loss) * ratio)
                     
+            # Condición SHORT (El cierre rompe el mínimo y la vela tiene cuerpo fuerte)
             elif row['Close'] < min_5min:
-                if (mecha_sup / tamaño_vela) >= (pct_rechazo / 100):
+                if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     tipo_trade = 'Short 🔴'
-                    entrada = row['Low']
+                    entrada = row['Close'] # Entrar al cierre de esa vela confirmada
                     stop_loss = mitad_rango 
                     take_profit = entrada - ((stop_loss - entrada) * ratio)
             
@@ -130,6 +130,9 @@ def ejecutar_backtest(df, pct_rechazo, ratio):
                 
                 df_post_entrada = df_dia.loc[idx:]
                 for jdx, vela in df_post_entrada.iterrows():
+                    # Ignoramos la vela de entrada para el cálculo de resultados
+                    if jdx == idx: continue 
+                    
                     if "Long" in tipo_trade:
                         if vela['Low'] <= stop_loss:
                             resultado = "Pérdida ❌"
@@ -160,7 +163,7 @@ def ejecutar_backtest(df, pct_rechazo, ratio):
 st.title("📈 App de Estrategia ORB - Bitcoin (5 Minutos)")
 
 df_btc = obtener_datos_bingx(dias_historial)
-df_operaciones = ejecutar_backtest(df_btc, fuerza_rechazo, ratio_rr)
+df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
