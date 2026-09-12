@@ -5,13 +5,23 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
-st.set_page_config(page_title="App Trading: ORB Bitcoin 30m", layout="wide")
+st.set_page_config(page_title="App Trading: ORB Bitcoin", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ Ajustes ORB (30 Minutos)")
+    st.header("⚙️ Ajustes ORB")
+    
+    # NUEVO: Selector de Rango de Apertura
+    rango_orb = st.selectbox(
+        "Duración del Rango ORB", 
+        options=[5, 15, 30], 
+        index=2, 
+        format_func=lambda x: f"Primeros {x} Minutos",
+        help="Define cuántos minutos después de la apertura de NY se usarán para establecer el máximo y mínimo del rango."
+    )
+    
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
     
@@ -82,28 +92,41 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (REGLA FIRST STRIKE)
+# 3. MOTOR DE BACKTESTING (REGLA FIRST STRIKE MULTI-RANGO)
 # ==========================================
-def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
+def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct, minutos_rango):
     operaciones = []
     if df.empty:
         return pd.DataFrame(operaciones)
         
     fechas = df['Date'].unique()
     
+    # Configuración dinámica de los tiempos según la elección del usuario
+    if minutos_rango == 5:
+        fin_rango = '09:34'
+        inicio_operativo = '09:35'
+        velas_req = 1
+    elif minutos_rango == 15:
+        fin_rango = '09:44'
+        inicio_operativo = '09:45'
+        velas_req = 3
+    else: # 30 minutos
+        fin_rango = '09:59'
+        inicio_operativo = '10:00'
+        velas_req = 6
+    
     for fecha in fechas:
         df_dia = df[df['Date'] == fecha]
         
-        rango_inicial = df_dia.between_time('09:30', '09:59')
-        if rango_inicial.empty or len(rango_inicial) < 6:
+        rango_inicial = df_dia.between_time('09:30', fin_rango)
+        if rango_inicial.empty or len(rango_inicial) < velas_req:
             continue
             
-        max_30min = rango_inicial['High'].max()
-        min_30min = rango_inicial['Low'].min()
+        max_orb = rango_inicial['High'].max()
+        min_orb = rango_inicial['Low'].min()
         
-        horario_operativo = df_dia.between_time('10:00', '12:00')
+        horario_operativo = df_dia.between_time(inicio_operativo, '12:00')
         
-        # Bucle para escanear las velas de la sesión
         for idx, row in horario_operativo.iterrows():
             tamaño_vela = row['High'] - row['Low']
             if tamaño_vela == 0: continue
@@ -115,18 +138,16 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
             tipo_trade = None
             
             # DETECCIÓN DE LA PRIMERA RUPTURA HACIA ARRIBA
-            if entrada > max_30min:
-                parte_fuera = entrada - max_30min
+            if entrada > max_orb:
+                parte_fuera = entrada - max_orb
                 pct_fuera = (parte_fuera / tamaño_cuerpo) * 100
                 
-                # ¿Cumple los filtros estrictos?
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     if rango_rup[0] <= pct_fuera <= rango_rup[1]:
                         tipo_trade = 'Long 🟢'
                         stop_loss = entrada * (1 - (sl_pct / 100))
                         take_profit = entrada * (1 + ((sl_pct * ratio) / 100))
                 
-                # Si cumplió, corremos la simulación
                 if tipo_trade:
                     resultado = "Sin Resolución ⏳"
                     df_post_entrada = df_dia.loc[idx:]
@@ -144,26 +165,22 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
                         'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
                         'Stop Loss': stop_loss, 'Take Profit': take_profit,
                         'Resultado': resultado,
-                        'Max_ORB': max_30min, 'Min_ORB': min_30min,
+                        'Max_ORB': max_orb, 'Min_ORB': min_orb,
                         'Pct_Ruptura': pct_fuera
                     })
-                    
-                # Haya cumplido o no los filtros, esta fue la primera ruptura del día
-                break # Rompe el ciclo operativo de este día y pasa a la fecha siguiente
+                break 
                     
             # DETECCIÓN DE LA PRIMERA RUPTURA HACIA ABAJO
-            elif entrada < min_30min:
-                parte_fuera = min_30min - entrada
+            elif entrada < min_orb:
+                parte_fuera = min_orb - entrada
                 pct_fuera = (parte_fuera / tamaño_cuerpo) * 100
                 
-                # ¿Cumple los filtros estrictos?
                 if (tamaño_cuerpo / tamaño_vela) >= (pct_cuerpo / 100):
                     if rango_rup[0] <= pct_fuera <= rango_rup[1]:
                         tipo_trade = 'Short 🔴'
                         stop_loss = entrada * (1 + (sl_pct / 100))
                         take_profit = entrada * (1 - ((sl_pct * ratio) / 100))
                 
-                # Si cumplió, corremos la simulación
                 if tipo_trade:
                     resultado = "Sin Resolución ⏳"
                     df_post_entrada = df_dia.loc[idx:]
@@ -181,22 +198,20 @@ def ejecutar_backtest(df, pct_cuerpo, ratio, rango_rup, sl_pct):
                         'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
                         'Stop Loss': stop_loss, 'Take Profit': take_profit,
                         'Resultado': resultado,
-                        'Max_ORB': max_30min, 'Min_ORB': min_30min,
+                        'Max_ORB': max_orb, 'Min_ORB': min_orb,
                         'Pct_Ruptura': pct_fuera
                     })
-                    
-                # Haya cumplido o no los filtros, esta fue la primera ruptura del día
-                break # Rompe el ciclo operativo de este día y pasa a la fecha siguiente
+                break 
 
     return pd.DataFrame(operaciones)
 
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("📈 App de Estrategia ORB - Bitcoin (Rango 30 Minutos)")
+st.title(f"📈 App de Estrategia ORB - Bitcoin ({rango_orb} Minutos)")
 
 df_btc = obtener_datos_bingx(dias_historial)
-df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr, rango_ruptura, stop_loss_pct)
+df_operaciones = ejecutar_backtest(df_btc, fuerza_cuerpo, ratio_rr, rango_ruptura, stop_loss_pct, rango_orb)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
@@ -248,8 +263,8 @@ else:
             name='BTC/USDT'
         )])
         
-        fig.add_hline(y=trade_data['Max_ORB'], line_dash="dash", line_color="blue", annotation_text="Max 30m (09:30-10:00)")
-        fig.add_hline(y=trade_data['Min_ORB'], line_dash="dash", line_color="blue", annotation_text="Min 30m (09:30-10:00)")
+        fig.add_hline(y=trade_data['Max_ORB'], line_dash="dash", line_color="blue", annotation_text=f"Max {rango_orb}m")
+        fig.add_hline(y=trade_data['Min_ORB'], line_dash="dash", line_color="blue", annotation_text=f"Min {rango_orb}m")
         
         color_flecha = "green" if "Long" in trade_data['Tipo'] else "red"
         simbolo_flecha = "triangle-up" if "Long" in trade_data['Tipo'] else "triangle-down"
