@@ -229,11 +229,15 @@ else:
     col3.metric("Fallos ❌", fallos)
     col4.metric("% Win Rate", f"{win_rate:.1f}%")
     
+    # Formateo correcto para símbolos negativos antes del dólar
+    ganancia_neta_str = f"-${abs(ganancia_neta):,.2f}" if ganancia_neta < 0 else f"${ganancia_neta:,.2f}"
+    balance_final_str = f"-${abs(balance_final):,.2f}" if balance_final < 0 else f"${balance_final:,.2f}"
+    
     # Segunda fila de métricas (Dinero)
     col5, col6, col7, col8 = st.columns(4)
     col5.metric("Capital Inicial", f"${capital_inicial:,.2f}")
-    col6.metric("Balance Final", f"${balance_final:,.2f}", delta=f"${ganancia_neta:,.2f}")
-    col7.metric("Ganancia/Pérdida Neta ($)", f"${ganancia_neta:,.2f}", delta_color="normal" if ganancia_neta >= 0 else "inverse")
+    col6.metric("Balance Final", balance_final_str, delta=ganancia_neta_str)
+    col7.metric("Ganancia/Pérdida Neta ($)", ganancia_neta_str, delta_color="normal" if ganancia_neta >= 0 else "inverse")
     col8.metric("Rentabilidad (%)", f"{rentabilidad:.2f}%")
     
     st.divider()
@@ -244,8 +248,10 @@ else:
     df_mostrar.index = range(1, len(df_mostrar) + 1)
     
     columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit', 'PnL ($)', 'Balance']
+    
+    # Función lambda corregida para poner el signo '-' antes de '$'
     for col in columnas_moneda:
-        df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.2f}")
+        df_mostrar[col] = df_mostrar[col].apply(lambda x: f"-${abs(x):,.2f}" if pd.notnull(x) and x < 0 else f"${x:,.2f}" if pd.notnull(x) else x)
         
     df_mostrar['Expansión'] = (df_mostrar['Vela_Ruptura'] / df_mostrar['Promedio_10_Velas']).apply(lambda x: f"{x:.2f}x el prom.")
     
