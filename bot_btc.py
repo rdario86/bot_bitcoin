@@ -14,7 +14,7 @@ st.set_page_config(page_title="BOT Estrategia ORB - Bitcoin", layout="wide")
 with st.sidebar.form(key='panel_ajustes'):
     st.header("⚙️ Ajustes ORB (15 Min)")
     
-    # Nuevos parámetros de gestión de capital
+    # Parámetros de gestión de capital
     st.subheader("💰 Gestión de Capital")
     capital_inicial = st.number_input("Bank / Capital Inicial ($)", min_value=100.0, value=1000.0, step=100.0)
     riesgo_pct = st.selectbox("Riesgo por Operación (%)", options=[1, 2, 3, 4, 5], index=0, help="Porcentaje del balance actual que se arriesgará en caso de tocar el Stop Loss.")
@@ -22,7 +22,16 @@ with st.sidebar.form(key='panel_ajustes'):
     st.divider()
     
     dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
-    ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", min_value=0.1, value=2.0, step=0.1)
+    
+    # Selector estricto para el Ratio Riesgo/Beneficio
+    opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 3.0: "1:3"}
+    ratio_rr = st.selectbox(
+        "Ratio Riesgo/Beneficio", 
+        options=list(opciones_ratio.keys()), 
+        format_func=lambda x: opciones_ratio[x],
+        index=2, # Por defecto selecciona 1:2 (posición 2 en la lista)
+        help="Selecciona tu objetivo de ganancias en relación al riesgo asumido."
+    )
     
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
