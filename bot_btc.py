@@ -3,6 +3,7 @@ import pandas as pd
 import ccxt
 import plotly.graph_objects as go
 from datetime import timedelta
+import time
 
 st.set_page_config(page_title="App Trading: ORB Bitcoin 5m", layout="wide")
 
@@ -11,7 +12,6 @@ st.set_page_config(page_title="App Trading: ORB Bitcoin 5m", layout="wide")
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
     st.header("⚙️ Ajustes ORB (5 Minutos)")
-    # Slider ajustado a un máximo de 90 días, con 30 días por defecto
     dias_historial = st.slider("Días de Backtesting", 1, 90, 30)
     riesgo_porcentaje = st.slider("Riesgo por Operación (%)", 1.0, 3.0, 1.0, 0.5)
     ratio_rr = st.number_input("Ratio Riesgo/Beneficio (1:X)", value=2.0)
@@ -19,7 +19,7 @@ with st.sidebar.form(key='panel_ajustes'):
     ejecutar_btn = st.form_submit_button("Confirmar Ajustes y Ejecutar")
 
 # ==========================================
-# 2. CONEXIÓN A BINGX (TIMEFRAME 5 MINUTOS)
+# 2. CONEXIÓN A BINGX (CON PROTECCIÓN DE LÍMITES)
 # ==========================================
 @st.cache_data(ttl=300, show_spinner="Descargando datos de BingX Futuros (5m)...")
 def obtener_datos_bingx(dias):
@@ -37,13 +37,22 @@ def obtener_datos_bingx(dias):
         limite_velas = 1000 
         
         while True:
-            velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='5m', since=since, limit=limite_velas)
-            if not velas:
+            try:
+                velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='5m', since=since, limit=limite_velas)
+                if not velas:
+                    break
+                
+                todas_las_velas.extend(velas)
+                since = velas[-1][0] + 300000 
+                
+                if len(velas) < limite_velas:
+                    break 
+                
+                time.sleep(0.1) 
+                
+            except Exception as limite_api:
+                print(f"Límite histórico alcanzado por la API: {limite_api}")
                 break
-            todas_las_velas.extend(velas)
-            since = velas[-1][0] + 300000 
-            if len(velas) < limite_velas:
-                break 
                 
         if not todas_las_velas:
             return pd.DataFrame()
@@ -59,7 +68,7 @@ def obtener_datos_bingx(dias):
         return df
     
     except Exception as e:
-        st.error(f"Error de conexión con BingX: {e}")
+        st.error(f"Error crítico de conexión: {e}")
         return pd.DataFrame()
 
 # ==========================================
