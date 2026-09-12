@@ -98,6 +98,10 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     capital_actual = capital_inicial
     
     for fecha in fechas:
+        # FILTRO DE DÍAS HÁBILES: Omitir sábados (5) y domingos (6)
+        if fecha.weekday() >= 5:
+            continue
+            
         df_dia = df_calc[df_calc['Date'] == fecha]
         
         vela_apertura = df_dia.between_time('09:30', '09:30')
@@ -249,7 +253,7 @@ else:
     
     columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit', 'PnL ($)', 'Balance']
     
-    # Función lambda corregida para poner el signo '-' antes de '$'
+    # Función lambda para poner el signo '-' antes de '$'
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"-${abs(x):,.2f}" if pd.notnull(x) and x < 0 else f"${x:,.2f}" if pd.notnull(x) else x)
         
