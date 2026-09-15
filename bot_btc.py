@@ -29,7 +29,7 @@ with st.sidebar.form(key='panel_ajustes'):
         "Ratio Riesgo/Beneficio", 
         options=list(opciones_ratio.keys()), 
         format_func=lambda x: opciones_ratio[x],
-        index=3, # Por defecto selecciona 1:2 (posición 2 en la lista)
+        index=4, # Por defecto selecciona 1:3 (posición 4 en la lista)
         help="Selecciona tu objetivo de ganancias en relación al riesgo asumido."
     )
     
