@@ -224,37 +224,82 @@ if df_btc.empty:
 elif df_operaciones.empty:
     st.info("No se encontraron operaciones. El filtro de expansión de vela (10 periodos) podría estar bloqueando entradas con bajo momentum.")
 else:
+    # 1. DIVISIÓN DE DATOS POR TIPO DE CIERRE
+    df_regulares = df_operaciones[~df_operaciones['Resultado'].str.contains("16:00")]
+    df_tiempo = df_operaciones[df_operaciones['Resultado'].str.contains("16:00")]
+
     total_trades = len(df_operaciones)
-    aciertos = len(df_operaciones[df_operaciones['Resultado'].str.contains("Ganancia")])
-    fallos = len(df_operaciones[df_operaciones['Resultado'].str.contains("Pérdida")])
-    win_rate = (aciertos / total_trades) * 100 if total_trades > 0 else 0
-    
     balance_final = df_operaciones['Balance'].iloc[-1]
-    ganancia_neta = balance_final - capital_inicial
-    rentabilidad = (ganancia_neta / capital_inicial) * 100
-    
+    ganancia_neta_total = balance_final - capital_inicial
+    rentabilidad_total = (ganancia_neta_total / capital_inicial) * 100
+
+    # 2. SECCIÓN DE MÉTRICAS DIVIDIDAS
     st.subheader("📊 Resumen de Rendimiento y Rentabilidad")
     
-    # Primera fila de métricas (Estadísticas del sistema)
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Operaciones", total_trades)
-    col2.metric("Aciertos ✅", aciertos)
-    col3.metric("Fallos ❌", fallos)
-    col4.metric("% Win Rate", f"{win_rate:.1f}%")
-    
-    # Formateo correcto para símbolos negativos antes del dólar
-    ganancia_neta_str = f"-${abs(ganancia_neta):,.2f}" if ganancia_neta < 0 else f"${ganancia_neta:,.2f}"
-    balance_final_str = f"-${abs(balance_final):,.2f}" if balance_final < 0 else f"${balance_final:,.2f}"
-    
-    # Segunda fila de métricas (Dinero)
-    col5, col6, col7, col8 = st.columns(4)
-    col5.metric("Capital Inicial", f"${capital_inicial:,.2f}")
-    col6.metric("Balance Final", balance_final_str, delta=ganancia_neta_str)
-    col7.metric("Ganancia/Pérdida Neta ($)", ganancia_neta_str, delta_color="normal" if ganancia_neta >= 0 else "inverse")
-    col8.metric("Rentabilidad (%)", f"{rentabilidad:.2f}%")
-    
+    tab1, tab2, tab3 = st.tabs(["Totales (Suma)", "Cierres por SL/TP", "Cierres Forzados (16:00)"])
+
+    with tab1: # TOTALES
+        aciertos_tot = len(df_operaciones[df_operaciones['Resultado'].str.contains("Ganancia")])
+        fallos_tot = len(df_operaciones[df_operaciones['Resultado'].str.contains("Pérdida")])
+        win_rate_tot = (aciertos_tot / total_trades) * 100 if total_trades > 0 else 0
+        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Operaciones", total_trades)
+        c2.metric("Aciertos ✅", aciertos_tot)
+        c3.metric("Fallos ❌", fallos_tot)
+        c4.metric("% Win Rate Global", f"{win_rate_tot:.1f}%")
+        
+        c5, c6, c7, c8 = st.columns(4)
+        c5.metric("Capital Inicial", f"${capital_inicial:,.2f}")
+        c6.metric("Balance Final", f"${balance_final:,.2f}")
+        c7.metric("PnL Neto Global ($)", f"${ganancia_neta_total:,.2f}", delta_color="normal" if ganancia_neta_total >= 0 else "inverse")
+        c8.metric("Rentabilidad Total (%)", f"{rentabilidad_total:.2f}%")
+
+    with tab2: # SL / TP
+        total_reg = len(df_regulares)
+        if total_reg > 0:
+            aciertos_reg = len(df_regulares[df_regulares['Resultado'] == "Ganancia ✅"])
+            fallos_reg = len(df_regulares[df_regulares['Resultado'] == "Pérdida ❌"])
+            wr_reg = (aciertos_reg / total_reg) * 100
+            pnl_reg = df_regulares['PnL ($)'].sum()
+            rentabilidad_reg = (pnl_reg / capital_inicial) * 100
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Operaciones SL/TP", total_reg)
+            c2.metric("Tocaron TP ✅", aciertos_reg)
+            c3.metric("Tocaron SL ❌", fallos_reg)
+            c4.metric("% Win Rate (Regulares)", f"{wr_reg:.1f}%")
+
+            c5, c6, c7 = st.columns(3)
+            c5.metric("PnL SL/TP ($)", f"${pnl_reg:,.2f}", delta_color="normal" if pnl_reg >= 0 else "inverse")
+            c6.metric("Aporte a Rentabilidad", f"{rentabilidad_reg:.2f}%")
+        else:
+            st.info("No hubo operaciones cerradas por SL o TP en este periodo.")
+
+    with tab3: # CIERRES 16:00
+        total_tmp = len(df_tiempo)
+        if total_tmp > 0:
+            aciertos_tmp = len(df_tiempo[df_tiempo['Resultado'] == "Ganancia (16:00) ⏱️✅"])
+            fallos_tmp = len(df_tiempo[df_tiempo['Resultado'] == "Pérdida (16:00) ⏱️❌"])
+            wr_tmp = (aciertos_tmp / total_tmp) * 100
+            pnl_tmp = df_tiempo['PnL ($)'].sum()
+            rentabilidad_tmp = (pnl_tmp / capital_inicial) * 100
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Cierres a las 16:00", total_tmp)
+            c2.metric("En Positivo ⏱️✅", aciertos_tmp)
+            c3.metric("En Negativo ⏱️❌", fallos_tmp)
+            c4.metric("% Win Rate (Tiempo)", f"{wr_tmp:.1f}%")
+
+            c5, c6, c7 = st.columns(3)
+            c5.metric("PnL por Tiempo ($)", f"${pnl_tmp:,.2f}", delta_color="normal" if pnl_tmp >= 0 else "inverse")
+            c6.metric("Aporte a Rentabilidad", f"{rentabilidad_tmp:.2f}%")
+        else:
+            st.info("Ninguna operación tuvo que ser forzada a cerrar a las 16:00.")
+            
     st.divider()
     
+    # 3. REGISTRO Y GRÁFICOS (Se mantiene igual que tu original)
     st.subheader("📋 Registro Detallado")
     df_mostrar = df_operaciones.copy()
     
@@ -262,13 +307,11 @@ else:
     
     columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit', 'PnL ($)', 'Balance']
     
-    # Función lambda para poner el signo '-' antes de '$'
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"-${abs(x):,.2f}" if pd.notnull(x) and x < 0 else f"${x:,.2f}" if pd.notnull(x) else x)
         
     df_mostrar['Expansión'] = (df_mostrar['Vela_Ruptura'] / df_mostrar['Promedio_10_Velas']).apply(lambda x: f"{x:.2f}x el prom.")
     
-    # Reordenar las columnas para una mejor lectura financiera
     columnas_finales = ['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Expansión', 'Resultado', 'PnL ($)', 'Balance']
     st.dataframe(df_mostrar[columnas_finales], use_container_width=True)
     
