@@ -21,7 +21,7 @@ with st.sidebar.form(key='panel_ajustes'):
     
     st.divider()
     
-    dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
+    dias_historial = st.slider("Días de Backtesting", 1, 30, 45)
     
     # Selector estricto para el Ratio Riesgo/Beneficio
     opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 2.5: "1:2.50", 3.0: "1:3"}
