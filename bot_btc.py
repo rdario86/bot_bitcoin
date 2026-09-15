@@ -17,7 +17,7 @@ with st.sidebar.form(key='panel_ajustes'):
     # Parámetros de gestión de capital
     st.subheader("💰 Gestión de Capital")
     capital_inicial = st.number_input("Bank / Capital Inicial ($)", min_value=100.0, value=1000.0, step=100.0)
-    riesgo_pct = st.selectbox("Riesgo por Operación (%)", options=[1, 2, 3, 4, 5], index=0, help="Porcentaje del balance actual que se arriesgará en caso de tocar el Stop Loss.")
+    riesgo_pct = st.selectbox("Riesgo por Operación (%)", options=[1, 2, 3, 4, 5], index=2, help="Porcentaje del balance actual que se arriesgará en caso de tocar el Stop Loss.")
     
     st.divider()
     
@@ -29,7 +29,7 @@ with st.sidebar.form(key='panel_ajustes'):
         "Ratio Riesgo/Beneficio", 
         options=list(opciones_ratio.keys()), 
         format_func=lambda x: opciones_ratio[x],
-        index=2, # Por defecto selecciona 1:2 (posición 2 en la lista)
+        index=3, # Por defecto selecciona 1:2 (posición 2 en la lista)
         help="Selecciona tu objetivo de ganancias en relación al riesgo asumido."
     )
     
