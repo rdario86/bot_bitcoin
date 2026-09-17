@@ -6,13 +6,13 @@ from datetime import timedelta
 import time
 
 # Título actualizado en la pestaña del navegador
-st.set_page_config(page_title="BOT ORB (15 Min) - Velas 3m", layout="wide")
+st.set_page_config(page_title="BOT Estrategia ORB (15m) - Bitcoin", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA Y CAPITAL
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ Ajustes ORB (Velas 3m)")
+    st.header("⚙️ Ajustes ORB (15m)")
     
     st.subheader("💰 Gestión de Capital")
     capital_inicial = st.number_input("Bank / Capital Inicial ($)", min_value=100.0, value=1000.0, step=100.0)
@@ -33,9 +33,9 @@ with st.sidebar.form(key='panel_ajustes'):
     ejecutar_btn = st.form_submit_button("Confirmar y Ejecutar")
 
 # ==========================================
-# 2. CONEXIÓN A BINGX (VELAS DE 3 MINUTOS)
+# 2. CONEXIÓN A BINGX (VELAS DE 15 MINUTOS)
 # ==========================================
-@st.cache_data(ttl=300, show_spinner="Descargando datos de BingX Futuros (3m)...")
+@st.cache_data(ttl=300, show_spinner="Descargando datos de BingX Futuros (15m)...")
 def obtener_datos_bingx(dias):
     try:
         exchange = ccxt.bingx({
@@ -52,12 +52,11 @@ def obtener_datos_bingx(dias):
         
         while True:
             try:
-                # CAMBIADO A VELAS DE 3 MINUTOS
-                velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='3m', since=since, limit=limite_velas)
+                velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='15m', since=since, limit=limite_velas)
                 if not velas: break
                 
                 todas_las_velas.extend(velas)
-                since = velas[-1][0] + 180000 # 3 Minutos en milisegundos
+                since = velas[-1][0] + 900000 
                 
                 if len(velas) < limite_velas: break 
                 time.sleep(0.1) 
@@ -83,125 +82,86 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (AMERICANA)
+# 3. MOTOR DE BACKTESTING (SOLO AMERICANA)
 # ==========================================
 def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
     if df.empty: return pd.DataFrame(operaciones)
         
     df_calc = df.copy()
-    
-    # 1. Definir Pivotes Estructurales en 3m
-    df_calc['Pivote_Bajo'] = (df_calc['Low'] < df_calc['Low'].shift(1)) & (df_calc['Low'] < df_calc['Low'].shift(-1))
-    df_calc['Pivote_Alto'] = (df_calc['High'] > df_calc['High'].shift(1)) & (df_calc['High'] > df_calc['High'].shift(-1))
-    
-    # Propagar el último valor de pivote conocido hacia adelante
-    df_calc['Ultimo_Soporte'] = df_calc.loc[df_calc['Pivote_Bajo'], 'Low']
-    df_calc['Ultimo_Soporte'] = df_calc['Ultimo_Soporte'].ffill()
-    
-    df_calc['Ultima_Resistencia'] = df_calc.loc[df_calc['Pivote_Alto'], 'High']
-    df_calc['Ultima_Resistencia'] = df_calc['Ultima_Resistencia'].ffill()
-
-    # 2. Filtro de Expansión de Volatilidad
     df_calc['Tamaño_Vela'] = df_calc['High'] - df_calc['Low']
     df_calc['Promedio_Tamaño_10'] = df_calc['Tamaño_Vela'].shift(1).rolling(window=10).mean()
         
     fechas = df_calc['Date'].unique()
-    hora_cierre_tiempo = pd.to_datetime('16:00').time()
     capital_actual = capital_inicial
     
     for fecha in fechas:
-        if fecha.weekday() >= 5: continue 
+        if fecha.weekday() >= 5: continue # Omitir fines de semana
             
-        df_dia = df_calc[df_calc['Date'] == fecha]
-        
-        # RANGO DE APERTURA (09:30 a 09:44 = 15 Minutos -> 5 velas de 3m)
-        vela_apertura = df_dia.between_time('09:30', '09:44')
-        if len(vela_apertura) < 5: continue 
+        # ===============================================
+        # SESIÓN AMERICANA (09:30 a 16:00)
+        # ===============================================
+        vela_us = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time == pd.to_datetime('09:30').time())]
+        if not vela_us.empty:
+            max_orb = vela_us['High'].iloc[0]
+            min_orb = vela_us['Low'].iloc[0]
             
-        max_orb = vela_apertura['High'].max()
-        min_orb = vela_apertura['Low'].min()
-        
-        # BÚSQUEDA DE ENTRADA (Desde las 09:45 hasta las 12:00)
-        horario_operativo = df_dia.between_time('09:45', '12:00')
-        
-        for idx, row in horario_operativo.iterrows():
-            entrada = row['Close'] 
-            tamano = row['Tamaño_Vela']
-            prom = row['Promedio_Tamaño_10']
-            tipo_trade = None
-            stop_loss = 0
+            horario_us = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time >= pd.to_datetime('09:45').time()) & (df_calc.index.time <= pd.to_datetime('12:00').time())]
             
-            # Validación de Long
-            if entrada > max_orb and pd.notna(prom) and tamano > prom:
-                tipo_trade = 'Long 🟢'
-                stop_loss = row['Ultimo_Soporte']
+            for idx, row in horario_us.iterrows():
+                entrada = row['Close']
+                tamano = row['Tamaño_Vela']
+                prom = row['Promedio_Tamaño_10']
+                tipo_trade = None
                 
-                # Seguridad: Si no hay pivote o está muy arriba, usamos el mínimo del ORB
-                if pd.isna(stop_loss) or stop_loss >= max_orb:
-                     stop_loss = min_orb 
-                
-            # Validación de Short
-            elif entrada < min_orb and pd.notna(prom) and tamano > prom:
-                tipo_trade = 'Short 🔴'
-                stop_loss = row['Ultima_Resistencia']
-                
-                # Seguridad: Si no hay pivote o está muy abajo, usamos el máximo del ORB
-                if pd.isna(stop_loss) or stop_loss <= min_orb:
-                     stop_loss = max_orb
-                
-            if tipo_trade:
-                riesgo_precio = abs(entrada - stop_loss)
-                if riesgo_precio == 0: continue
-                
-                take_profit = entrada + (riesgo_precio * ratio) if "Long" in tipo_trade else entrada - (riesgo_precio * ratio)
-                
-                resultado = "Sin Resolución ⏳"
-                pnl_usd = 0.0
-                riesgo_usd = capital_actual * (riesgo_pct / 100)
-                
-                df_post_entrada = df_dia.loc[idx:]
-                
-                for jdx, vela in df_post_entrada.iterrows():
-                    if jdx == idx: continue 
+                if entrada > max_orb and pd.notna(prom) and tamano > prom:
+                    tipo_trade = 'Long 🟢'
+                    stop_loss = min_orb 
+                elif entrada < min_orb and pd.notna(prom) and tamano > prom:
+                    tipo_trade = 'Short 🔴'
+                    stop_loss = max_orb
                     
-                    if jdx.time() >= hora_cierre_tiempo:
-                        precio_cierre = vela['Open']
-                        dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
-                        pnl_usd = (dist / riesgo_precio) * riesgo_usd
-                        resultado = "Ganancia (16:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (16:00) ⏱️❌"
-                        break
+                if tipo_trade:
+                    riesgo_precio = abs(entrada - stop_loss)
+                    take_profit = entrada + (riesgo_precio * ratio) if "Long" in tipo_trade else entrada - (riesgo_precio * ratio)
                     
-                    if "Long" in tipo_trade:
-                        if vela['Low'] <= stop_loss:
+                    resultado = "Sin Resolución ⏳"
+                    riesgo_usd = capital_actual * (riesgo_pct / 100)
+                    df_post = df_calc.loc[idx:]
+                    limite_tiempo = idx.replace(hour=16, minute=0, second=0)
+                    
+                    for jdx, vela in df_post.iterrows():
+                        if jdx == idx: continue 
+                        
+                        if jdx >= limite_tiempo:
+                            precio_cierre = vela['Open']
+                            dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
+                            pnl_usd = (dist / riesgo_precio) * riesgo_usd
+                            resultado = "Ganancia (16:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (16:00) ⏱️❌"
+                            break
+                            
+                        if ("Long" in tipo_trade and vela['Low'] <= stop_loss) or ("Short" in tipo_trade and vela['High'] >= stop_loss):
                             resultado, pnl_usd = "Pérdida ❌", -riesgo_usd
                             break
-                        elif vela['High'] >= take_profit:
+                        elif ("Long" in tipo_trade and vela['High'] >= take_profit) or ("Short" in tipo_trade and vela['Low'] <= take_profit):
                             resultado, pnl_usd = "Ganancia ✅", riesgo_usd * ratio
                             break
-                    else: 
-                        if vela['High'] >= stop_loss:
-                            resultado, pnl_usd = "Pérdida ❌", -riesgo_usd
-                            break
-                        elif vela['Low'] <= take_profit:
-                            resultado, pnl_usd = "Ganancia ✅", riesgo_usd * ratio
-                            break
-                
-                capital_actual += pnl_usd
-                operaciones.append({
-                    'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
-                    'Stop Loss': stop_loss, 'Take Profit': take_profit, 'Resultado': resultado,
-                    'Max_ORB_15m': max_orb, 'Min_ORB_15m': min_orb, 'Vela_Ruptura': tamano, 'Promedio_10_Velas': prom,
-                    'PnL ($)': pnl_usd, 'Balance': capital_actual
-                })
-                break 
+                    
+                    capital_actual += pnl_usd
+                    operaciones.append({
+                        'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
+                        'Stop Loss': stop_loss, 'Take Profit': take_profit, 'Resultado': resultado,
+                        'Max_ORB': max_orb, 'Min_ORB': min_orb, 'Vela_Ruptura': tamano, 'Promedio_10_Velas': prom,
+                        'PnL ($)': pnl_usd, 'Balance': capital_actual
+                    })
+                    break 
 
     return pd.DataFrame(operaciones)
 
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("📈 BOT Estrategia ORB 15 Minutos (Velas 3m)")
+st.title("📈 BOT Estrategia ORB (Solo EEUU)")
 
 df_btc = obtener_datos_bingx(dias_historial)
 df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct)
@@ -209,21 +169,22 @@ df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
 elif df_operaciones.empty:
-    st.info("No se encontraron operaciones en el rango seleccionado.")
+    st.info("No se encontraron operaciones en este rango de tiempo.")
 else:
+    # División de datos
     df_regulares = df_operaciones[~df_operaciones['Resultado'].str.contains("16:00")]
     df_tiempo = df_operaciones[df_operaciones['Resultado'].str.contains("16:00")]
 
     total_trades = len(df_operaciones)
-    balance_final = df_operaciones['Balance'].iloc[-1]
-    ganancia_neta_total = balance_final - capital_inicial
-    rentabilidad_total = (ganancia_neta_total / capital_inicial) * 100
+    balance_final = capital_inicial + df_operaciones['PnL ($)'].sum()
+    ganancia_neta = df_operaciones['PnL ($)'].sum()
+    rentabilidad = (ganancia_neta / capital_inicial) * 100
 
-    st.subheader("📊 Resumen de Rendimiento y Rentabilidad")
+    st.subheader(f"📊 Resumen de Rendimiento - Sesión Americana")
     
-    tab1, tab2, tab3 = st.tabs(["Totales (Suma)", "Cierres por SL/TP", "Cierres Forzados (16:00)"])
+    tab1, tab2, tab3 = st.tabs(["Totales (Suma)", "Cierres por SL/TP", "Cierres Forzados"])
 
-    with tab1:
+    with tab1: # TOTALES
         aciertos_tot = len(df_operaciones[df_operaciones['Resultado'].str.contains("Ganancia")])
         fallos_tot = len(df_operaciones[df_operaciones['Resultado'].str.contains("Pérdida")])
         win_rate_tot = (aciertos_tot / total_trades) * 100 if total_trades > 0 else 0
@@ -235,19 +196,19 @@ else:
         c4.metric("% Win Rate Global", f"{win_rate_tot:.1f}%")
         
         c5, c6, c7, c8 = st.columns(4)
-        c5.metric("Capital Inicial", f"${capital_inicial:,.2f}")
-        c6.metric("Balance Final", f"${balance_final:,.2f}")
-        c7.metric("PnL Neto Global ($)", f"${ganancia_neta_total:,.2f}", delta_color="normal" if ganancia_neta_total >= 0 else "inverse")
-        c8.metric("Rentabilidad Total (%)", f"{rentabilidad_total:.2f}%")
+        c5.metric("Capital Referencia", f"${capital_inicial:,.2f}")
+        c6.metric("Balance Proyectado", f"${balance_final:,.2f}")
+        c7.metric("PnL Neto ($)", f"${ganancia_neta:,.2f}", delta_color="normal" if ganancia_neta >= 0 else "inverse")
+        c8.metric("Rentabilidad (%)", f"{rentabilidad:.2f}%")
 
-    with tab2:
+    with tab2: # SL / TP
         total_reg = len(df_regulares)
         if total_reg > 0:
             aciertos_reg = len(df_regulares[df_regulares['Resultado'] == "Ganancia ✅"])
             fallos_reg = len(df_regulares[df_regulares['Resultado'] == "Pérdida ❌"])
             wr_reg = (aciertos_reg / total_reg) * 100
             pnl_reg = df_regulares['PnL ($)'].sum()
-            rentabilidad_reg = (pnl_reg / capital_inicial) * 100
+            rent_reg = (pnl_reg / capital_inicial) * 100
 
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Operaciones SL/TP", total_reg)
@@ -257,33 +218,34 @@ else:
 
             c5, c6, c7 = st.columns(3)
             c5.metric("PnL SL/TP ($)", f"${pnl_reg:,.2f}", delta_color="normal" if pnl_reg >= 0 else "inverse")
-            c6.metric("Aporte a Rentabilidad", f"{rentabilidad_reg:.2f}%")
+            c6.metric("Aporte a Rentabilidad", f"{rent_reg:.2f}%")
         else:
-            st.info("No hubo operaciones cerradas por SL o TP en este periodo.")
+            st.info("No hubo operaciones cerradas por SL o TP.")
 
-    with tab3:
+    with tab3: # CIERRES POR TIEMPO
         total_tmp = len(df_tiempo)
         if total_tmp > 0:
-            aciertos_tmp = len(df_tiempo[df_tiempo['Resultado'] == "Ganancia (16:00) ⏱️✅"])
-            fallos_tmp = len(df_tiempo[df_tiempo['Resultado'] == "Pérdida (16:00) ⏱️❌"])
+            aciertos_tmp = len(df_tiempo[df_tiempo['Resultado'].str.contains("Ganancia")])
+            fallos_tmp = len(df_tiempo[df_tiempo['Resultado'].str.contains("Pérdida")])
             wr_tmp = (aciertos_tmp / total_tmp) * 100
             pnl_tmp = df_tiempo['PnL ($)'].sum()
-            rentabilidad_tmp = (pnl_tmp / capital_inicial) * 100
+            rent_tmp = (pnl_tmp / capital_inicial) * 100
 
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Cierres a las 16:00", total_tmp)
+            c1.metric("Cierres por Tiempo", total_tmp)
             c2.metric("En Positivo ⏱️✅", aciertos_tmp)
             c3.metric("En Negativo ⏱️❌", fallos_tmp)
             c4.metric("% Win Rate (Tiempo)", f"{wr_tmp:.1f}%")
 
             c5, c6, c7 = st.columns(3)
             c5.metric("PnL por Tiempo ($)", f"${pnl_tmp:,.2f}", delta_color="normal" if pnl_tmp >= 0 else "inverse")
-            c6.metric("Aporte a Rentabilidad", f"{rentabilidad_tmp:.2f}%")
+            c6.metric("Aporte a Rentabilidad", f"{rent_tmp:.2f}%")
         else:
-            st.info("Ninguna operación tuvo que ser forzada a cerrar a las 16:00.")
+            st.info("Ninguna operación tuvo que ser forzada a cerrar por tiempo.")
             
     st.divider()
     
+    # 3. REGISTRO Y GRÁFICOS
     st.subheader("📋 Registro Detallado")
     df_mostrar = df_operaciones.copy()
     df_mostrar.index = range(1, len(df_mostrar) + 1)
@@ -299,7 +261,7 @@ else:
     
     st.divider()
     
-    st.subheader("🔍 Visualizador de Operaciones (Velas de 3 Minutos)")
+    st.subheader("🔍 Visualizador de Operaciones (Velas de 15 Minutos)")
     opciones_trades = df_operaciones['Fecha'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist()
     trade_seleccionado = st.selectbox("Selecciona la fecha del Trade:", opciones_trades)
     
@@ -315,8 +277,8 @@ else:
             low=df_dia['Low'], close=df_dia['Close'], name='BTC/USDT'
         )])
         
-        fig.add_hline(y=trade_data['Max_ORB_15m'], line_dash="dash", line_color="blue", annotation_text="Máximo Rango 15m")
-        fig.add_hline(y=trade_data['Min_ORB_15m'], line_dash="dash", line_color="blue", annotation_text="Mínimo Rango 15m")
+        fig.add_hline(y=trade_data['Max_ORB'], line_dash="dash", line_color="blue", annotation_text="Máximo Rango 15m")
+        fig.add_hline(y=trade_data['Min_ORB'], line_dash="dash", line_color="blue", annotation_text="Mínimo Rango 15m")
         
         color_flecha = "green" if "Long" in trade_data['Tipo'] else "red"
         simbolo_flecha = "triangle-up" if "Long" in trade_data['Tipo'] else "triangle-down"
@@ -326,7 +288,7 @@ else:
             marker=dict(symbol=simbolo_flecha, size=15, color=color_flecha)
         ))
         
-        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Pivote Estructural)")
+        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Estructural)")
         fig.add_hline(y=trade_data['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
         
         fig.update_layout(
