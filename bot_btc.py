@@ -81,17 +81,13 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (SCALPING 1M)
+# 3. MOTOR DE BACKTESTING (SCALPING ORB PURO)
 # ==========================================
 def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
     if df.empty: return pd.DataFrame(operaciones)
         
     df_calc = df.copy()
-    
-    # RADAR DE ESTRUCTURA: Buscamos el pivote de los últimos 10 minutos
-    df_calc['Swing_Low'] = df_calc['Low'].rolling(window=10).min()
-    df_calc['Swing_High'] = df_calc['High'].rolling(window=10).max()
         
     fechas = df_calc['Date'].unique()
     capital_actual = capital_inicial
@@ -118,13 +114,11 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             
             if entrada > max_orb:
                 tipo_trade = 'Long 🟢'
-                stop_loss = row['Swing_Low']
-                if stop_loss >= max_orb: stop_loss = min_orb 
+                stop_loss = min_orb # SL en el mínimo del rango
                 
             elif entrada < min_orb:
                 tipo_trade = 'Short 🔴'
-                stop_loss = row['Swing_High']
-                if stop_loss <= min_orb: stop_loss = max_orb
+                stop_loss = max_orb # SL en el máximo del rango
                 
             if tipo_trade:
                 riesgo_precio = abs(entrada - stop_loss)
@@ -238,8 +232,9 @@ else:
             name='BTC/USDT'
         )])
         
-        fig.add_hline(y=trade_data['Max_ORB_5m'], line_dash="dash", line_color="blue", annotation_text="Máx 5m")
-        fig.add_hline(y=trade_data['Min_ORB_5m'], line_dash="dash", line_color="blue", annotation_text="Mín 5m")
+        # En esta versión, las líneas de Min_ORB y Max_ORB funcionan exactamente como las de SL
+        fig.add_hline(y=trade_data['Max_ORB_5m'], line_dash="dash", line_color="blue", annotation_text="Máx 5m (ORB)")
+        fig.add_hline(y=trade_data['Min_ORB_5m'], line_dash="dash", line_color="blue", annotation_text="Mín 5m (ORB)")
         
         color_flecha = "green" if "Long" in trade_data['Tipo'] else "red"
         simbolo_flecha = "triangle-up" if "Long" in trade_data['Tipo'] else "triangle-down"
@@ -250,7 +245,8 @@ else:
             marker=dict(symbol=simbolo_flecha, size=15, color=color_flecha)
         ))
         
-        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="SL (Pivote Estructural)")
+        # La línea de SL se superpondrá a la de ORB correspondiente, lo cual es visualmente correcto.
+        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss")
         fig.add_hline(y=trade_data['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
         
         fig.update_layout(
