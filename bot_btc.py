@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import ccxt
+import yfinance as yf
 import plotly.graph_objects as go
 from datetime import timedelta
 import time
@@ -19,7 +19,8 @@ with st.sidebar.form(key='panel_ajustes'):
     
     st.divider()
     
-    dias_historial = st.slider("Días de Backtesting", 1, 30, 30)
+    # yfinance permite máximo 7 días para historial de 1 minuto.
+    dias_historial = st.slider("Días de Backtesting (Máx 7 en 1m)", 1, 7, 7)
     
     opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 2.5: "1:2.50", 3.0: "1:3"}
     ratio_rr = st.selectbox(
@@ -32,52 +33,43 @@ with st.sidebar.form(key='panel_ajustes'):
     ejecutar_btn = st.form_submit_button("Confirmar y Ejecutar")
 
 # ==========================================
-# 2. CONEXIÓN A BINGX (NASDAQ 1 MINUTO)
+# 2. CONEXIÓN A YAHOO FINANCE (NASDAQ 1 MINUTO)
 # ==========================================
-@st.cache_data(ttl=300, show_spinner="Descargando velas de Nasdaq (NQ) de BingX...")
-def obtener_datos_bingx(dias):
+@st.cache_data(ttl=300, show_spinner="Descargando velas de Nasdaq (NDX) desde Yahoo Finance...")
+def obtener_datos_nasdaq(dias):
     try:
-        exchange = ccxt.bingx({
-            'enableRateLimit': True,
-            'options': {'defaultType': 'swap'}
-        })
+        # Yahoo Finance restringe la temporalidad de 1m a los últimos 7 días.
+        ticker = "^NDX" 
+        df = yf.download(ticker, period=f"{dias}d", interval="1m", progress=False)
         
-        ahora = pd.Timestamp.utcnow()
-        inicio = ahora - pd.Timedelta(days=dias)
-        since = exchange.parse8601(inicio.isoformat())
-        
-        todas_las_velas = []
-        limite_velas = 1000 
-        
-        while True:
-            try:
-                # CAMBIO AL Ticker DEL NASDAQ 100
-                velas = exchange.fetch_ohlcv('NQ/USDT:USDT', timeframe='1m', since=since, limit=limite_velas)
-                if not velas: break
-                
-                todas_las_velas.extend(velas)
-                since = velas[-1][0] + 60000 
-                
-                if len(velas) < limite_velas: break 
-                time.sleep(0.1) 
-                
-            except Exception as limite_api:
-                break
-                
-        if not todas_las_velas: return pd.DataFrame()
+        if df.empty:
+            return pd.DataFrame()
             
-        df = pd.DataFrame(todas_las_velas, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
-        df['Timestamp'] = pd.to_datetime(df['Timestamp'], unit='ms')
-        df.set_index('Timestamp', inplace=True)
+        # Limpieza y formateo del DataFrame de Yahoo
+        df.reset_index(inplace=True)
+        # Yahoo Finance puede devolver las columnas como MultiIndex, las aplanamos
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
+        df.rename(columns={'Datetime': 'Timestamp'}, inplace=True)
         
-        df.index = df.index.tz_localize('UTC').tz_convert('America/New_York')
-        df = df[~df.index.duplicated(keep='first')]
+        # Asegurarnos de que el índice es de tipo Datetime y está en NY
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+        
+        # Yahoo ya suele entregar los datos de acciones de USA en horario de NY,
+        # pero forzamos la conversión para estar 100% seguros de que encaja con el algoritmo.
+        if df['Timestamp'].dt.tz is None:
+            df['Timestamp'] = df['Timestamp'].dt.tz_localize('America/New_York')
+        else:
+            df['Timestamp'] = df['Timestamp'].dt.tz_convert('America/New_York')
+            
+        df.set_index('Timestamp', inplace=True)
         df['Date'] = df.index.date
         
         return df
     
     except Exception as e:
-        st.error(f"Error de conexión: {e}")
+        st.error(f"Error de conexión con Yahoo Finance: {e}")
         return pd.DataFrame()
 
 # ==========================================
@@ -89,7 +81,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
         
     df_calc = df.copy()
     
-    # RADAR DE ESTRUCTURA RESTAURADO (Últimos 10 minutos)
+    # RADAR DE ESTRUCTURA (Últimos 10 minutos)
     df_calc['Swing_Low'] = df_calc['Low'].rolling(window=10).min()
     df_calc['Swing_High'] = df_calc['High'].rolling(window=10).max()
         
@@ -105,26 +97,26 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
         vela_apertura = df_dia.between_time('09:30', '09:34')
         if len(vela_apertura) < 5: continue 
             
-        max_orb = vela_apertura['High'].max()
-        min_orb = vela_apertura['Low'].min()
+        max_orb = float(vela_apertura['High'].max())
+        min_orb = float(vela_apertura['Low'].min())
         
         # 2. BÚSQUEDA DE ENTRADA EXCLUSIVA (09:35 a 10:30)
         horario_operativo = df_dia.between_time('09:35', '10:30')
         
         for idx, row in horario_operativo.iterrows():
-            entrada = row['Close'] 
+            entrada = float(row['Close']) 
             tipo_trade = None
             stop_loss = 0
             
-            # SL ESTRUCTURAL RESTAURADO
+            # SL ESTRUCTURAL
             if entrada > max_orb:
                 tipo_trade = 'Long 🟢'
-                stop_loss = row['Swing_Low']
+                stop_loss = float(row['Swing_Low'])
                 if stop_loss >= max_orb: stop_loss = min_orb 
                 
             elif entrada < min_orb:
                 tipo_trade = 'Short 🔴'
-                stop_loss = row['Swing_High']
+                stop_loss = float(row['Swing_High'])
                 if stop_loss <= min_orb: stop_loss = max_orb
                 
             if tipo_trade:
@@ -142,18 +134,21 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 for jdx, vela in df_post_entrada.iterrows():
                     if jdx == idx: continue 
                     
+                    vela_low = float(vela['Low'])
+                    vela_high = float(vela['High'])
+                    
                     if "Long" in tipo_trade:
-                        if vela['Low'] <= stop_loss:
+                        if vela_low <= stop_loss:
                             resultado, pnl_usd = "Pérdida ❌", -riesgo_usd
                             break
-                        elif vela['High'] >= take_profit:
+                        elif vela_high >= take_profit:
                             resultado, pnl_usd = "Ganancia ✅", riesgo_usd * ratio
                             break
                     else: 
-                        if vela['High'] >= stop_loss:
+                        if vela_high >= stop_loss:
                             resultado, pnl_usd = "Pérdida ❌", -riesgo_usd
                             break
-                        elif vela['Low'] <= take_profit:
+                        elif vela_low <= take_profit:
                             resultado, pnl_usd = "Ganancia ✅", riesgo_usd * ratio
                             break
                 
@@ -169,15 +164,15 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     return pd.DataFrame(operaciones)
 
 # ==========================================
-# 4. INTERFAZ Y RESULTADOS (SÓLO SL/TP)
+# 4. INTERFAZ Y RESULTADOS
 # ==========================================
 st.title("📈 BOT Estrategia ORB - Nasdaq (Scalping Estructural 1M)")
 
-df_nq = obtener_datos_bingx(dias_historial)
+df_nq = obtener_datos_nasdaq(dias_historial)
 df_operaciones = ejecutar_backtest(df_nq, ratio_rr, capital_inicial, riesgo_pct)
 
 if df_nq.empty:
-    st.warning("No se pudieron cargar los datos del Nasdaq.")
+    st.warning("No se pudieron cargar los datos del Nasdaq desde Yahoo Finance.")
 elif df_operaciones.empty:
     st.info("No se encontraron operaciones en el rango seleccionado.")
 else:
@@ -236,7 +231,7 @@ else:
             x=df_dia.index,
             open=df_dia['Open'], high=df_dia['High'],
             low=df_dia['Low'], close=df_dia['Close'],
-            name='NQ/USDT'
+            name='NDX'
         )])
         
         fig.add_hline(y=trade_data['Max_ORB_5m'], line_dash="dash", line_color="blue", annotation_text="Máx 5m")
