@@ -6,7 +6,7 @@ from datetime import timedelta
 import time
 
 # Título actualizado en la pestaña del navegador
-st.set_page_config(page_title="BOT ORB (30 Min) - Bitcoin", layout="wide")
+st.set_page_config(page_title="BOT ORB (15 Min) - Bitcoin", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA Y CAPITAL
@@ -114,15 +114,15 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             
         df_dia = df_calc[df_calc['Date'] == fecha]
         
-        # RANGO DE APERTURA (09:30 a 09:55 = 30 Minutos)
-        vela_apertura = df_dia.between_time('09:30', '09:55')
-        if len(vela_apertura) < 6: continue 
+        # RANGO DE APERTURA (09:30 a 09:44 = 15 Minutos) -> Velas de 09:30, 09:35 y 09:40
+        vela_apertura = df_dia.between_time('09:30', '09:40')
+        if len(vela_apertura) < 3: continue 
             
         max_orb = vela_apertura['High'].max()
         min_orb = vela_apertura['Low'].min()
         
-        # BÚSQUEDA DE ENTRADA (Desde las 10:00 hasta las 12:00)
-        horario_operativo = df_dia.between_time('10:00', '12:00')
+        # BÚSQUEDA DE ENTRADA (Desde las 09:45 hasta las 12:00)
+        horario_operativo = df_dia.between_time('09:45', '12:00')
         
         for idx, row in horario_operativo.iterrows():
             entrada = row['Close'] 
@@ -190,7 +190,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 operaciones.append({
                     'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
                     'Stop Loss': stop_loss, 'Take Profit': take_profit, 'Resultado': resultado,
-                    'Max_ORB_30m': max_orb, 'Min_ORB_30m': min_orb, 'Vela_Ruptura': tamano, 'Promedio_10_Velas': prom,
+                    'Max_ORB_15m': max_orb, 'Min_ORB_15m': min_orb, 'Vela_Ruptura': tamano, 'Promedio_10_Velas': prom,
                     'PnL ($)': pnl_usd, 'Balance': capital_actual
                 })
                 break 
@@ -200,7 +200,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("📈 BOT Estrategia ORB 30 Minutos (Velas 5m)")
+st.title("📈 BOT Estrategia ORB 15 Minutos (Velas 5m)")
 
 df_btc = obtener_datos_bingx(dias_historial)
 df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct)
@@ -314,8 +314,8 @@ else:
             low=df_dia['Low'], close=df_dia['Close'], name='BTC/USDT'
         )])
         
-        fig.add_hline(y=trade_data['Max_ORB_30m'], line_dash="dash", line_color="blue", annotation_text="Máximo Rango 30m")
-        fig.add_hline(y=trade_data['Min_ORB_30m'], line_dash="dash", line_color="blue", annotation_text="Mínimo Rango 30m")
+        fig.add_hline(y=trade_data['Max_ORB_15m'], line_dash="dash", line_color="blue", annotation_text="Máximo Rango 15m")
+        fig.add_hline(y=trade_data['Min_ORB_15m'], line_dash="dash", line_color="blue", annotation_text="Mínimo Rango 15m")
         
         color_flecha = "green" if "Long" in trade_data['Tipo'] else "red"
         simbolo_flecha = "triangle-up" if "Long" in trade_data['Tipo'] else "triangle-down"
@@ -325,7 +325,7 @@ else:
             marker=dict(symbol=simbolo_flecha, size=15, color=color_flecha)
         ))
         
-        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Pivote)")
+        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Pivote Estructural)")
         fig.add_hline(y=trade_data['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
         
         fig.update_layout(
