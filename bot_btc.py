@@ -27,7 +27,7 @@ with st.sidebar.form(key='panel_ajustes'):
         "Ratio Riesgo/Beneficio", 
         options=list(opciones_ratio.keys()), 
         format_func=lambda x: opciones_ratio[x],
-        index=2 # Puesto en 1:2 por defecto
+        index=4
     )
     
     ejecutar_btn = st.form_submit_button("Confirmar y Ejecutar")
@@ -82,25 +82,13 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (15m - RETESTEO)
+# 3. MOTOR DE BACKTESTING (AMERICANA - RETESTEO)
 # ==========================================
 def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
     if df.empty: return pd.DataFrame(operaciones)
         
     df_calc = df.copy()
-    
-    # 1. Definir Pivotes Estructurales en 15m
-    df_calc['Pivote_Bajo'] = (df_calc['Low'] < df_calc['Low'].shift(1)) & (df_calc['Low'] < df_calc['Low'].shift(-1))
-    df_calc['Pivote_Alto'] = (df_calc['High'] > df_calc['High'].shift(1)) & (df_calc['High'] > df_calc['High'].shift(-1))
-    
-    df_calc['Ultimo_Soporte'] = df_calc.loc[df_calc['Pivote_Bajo'], 'Low']
-    df_calc['Ultimo_Soporte'] = df_calc['Ultimo_Soporte'].ffill()
-    
-    df_calc['Ultima_Resistencia'] = df_calc.loc[df_calc['Pivote_Alto'], 'High']
-    df_calc['Ultima_Resistencia'] = df_calc['Ultima_Resistencia'].ffill()
-
-    # 2. Filtro de Expansión de Volatilidad
     df_calc['Tamaño_Vela'] = df_calc['High'] - df_calc['Low']
     df_calc['Promedio_Tamaño_10'] = df_calc['Tamaño_Vela'].shift(1).rolling(window=10).mean()
         
@@ -110,7 +98,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     for fecha in fechas:
         if fecha.weekday() >= 5: continue 
             
-        # RANGO DE APERTURA (1 sola vela de 15m)
         vela_us = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time == pd.to_datetime('09:30').time())]
         if not vela_us.empty:
             max_orb = vela_us['High'].iloc[0]
@@ -121,7 +108,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             estado_ruptura = None
             vela_ruptura_tamano = 0
             promedio_ruptura = 0
-            stop_loss_proyectado = 0
             
             for idx, row in horario_us.iterrows():
                 
@@ -135,37 +121,32 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         estado_ruptura = 'Long'
                         vela_ruptura_tamano = tamano
                         promedio_ruptura = prom
-                        sl = row['Ultimo_Soporte']
-                        stop_loss_proyectado = sl if pd.notna(sl) and sl < max_orb else min_orb
-                        
                     elif cierre < min_orb and pd.notna(prom) and tamano > prom:
                         estado_ruptura = 'Short'
                         vela_ruptura_tamano = tamano
                         promedio_ruptura = prom
-                        sl = row['Ultima_Resistencia']
-                        stop_loss_proyectado = sl if pd.notna(sl) and sl > min_orb else max_orb
                 
-                # 2. BÚSQUEDA DE RETESTEO (Simulando órdenes Limit con mechas de 15m)
+                # 2. BÚSQUEDA DE RETESTEO (Órdenes Limit)
                 else:
                     entrada = None
                     tipo_trade = None
-                    stop_loss = stop_loss_proyectado
+                    stop_loss = 0
                     
                     if estado_ruptura == 'Long':
-                        if row['Low'] <= max_orb: # Si el mínimo de la vela bajó hasta tocar el ORB
+                        if row['Low'] <= max_orb: # El precio hace pullback y toca el techo
                             entrada = max_orb
                             tipo_trade = 'Long 🟢'
+                            stop_loss = min_orb 
                             
                     elif estado_ruptura == 'Short':
-                        if row['High'] >= min_orb: # Si el máximo de la vela subió hasta tocar el ORB
+                        if row['High'] >= min_orb: # El precio hace pullback y toca el suelo
                             entrada = min_orb
                             tipo_trade = 'Short 🔴'
+                            stop_loss = max_orb
                             
                     # 3. EJECUCIÓN DEL TRADE EN EL RETESTEO
                     if entrada is not None:
                         riesgo_precio = abs(entrada - stop_loss)
-                        if riesgo_precio == 0: break
-                        
                         take_profit = entrada + (riesgo_precio * ratio) if "Long" in tipo_trade else entrada - (riesgo_precio * ratio)
                         
                         resultado = "Sin Resolución ⏳"
@@ -174,6 +155,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         limite_tiempo = idx.replace(hour=16, minute=0, second=0)
                         
                         for jdx, vela in df_post.iterrows():
+                            
                             # Cierre de 16:00
                             if jdx >= limite_tiempo:
                                 precio_cierre = vela['Open']
@@ -197,7 +179,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                             'Max_ORB': max_orb, 'Min_ORB': min_orb, 'Vela_Ruptura': vela_ruptura_tamano, 'Promedio_10_Velas': promedio_ruptura,
                             'PnL ($)': pnl_usd, 'Balance': capital_actual
                         })
-                        break # Termina el día tras ejecutar el trade
+                        break # Termina el día tras el trade
 
     return pd.DataFrame(operaciones)
 
@@ -325,7 +307,7 @@ else:
         color_flecha = "green" if "Long" in trade_data['Tipo'] else "red"
         simbolo_flecha = "triangle-up" if "Long" in trade_data['Tipo'] else "triangle-down"
         
-        # El marcador se dibuja sobre la vela del pullback (retesteo)
+        # El marcador se dibuja exactamente sobre la vela que tocó el nivel (el retesteo)
         fig.add_trace(go.Scatter(
             x=[fecha_obj], y=[trade_data['Entrada']], mode='markers', name='Punto de Entrada (Pullback)',
             marker=dict(symbol=simbolo_flecha, size=15, color=color_flecha)
