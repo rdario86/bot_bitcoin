@@ -161,7 +161,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("📈 BOT Estrategia ORB (Solo EEUU)")
+st.title("📈 BOT Estrategia ORB")
 
 df_btc = obtener_datos_bingx(dias_historial)
 df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct)
@@ -180,7 +180,7 @@ else:
     ganancia_neta = df_operaciones['PnL ($)'].sum()
     rentabilidad = (ganancia_neta / capital_inicial) * 100
 
-    st.subheader(f"📊 Resumen de Rendimiento - Sesión Americana")
+    st.subheader(f"📊 Resumen de Rendimiento")
     
     tab1, tab2, tab3 = st.tabs(["Totales (Suma)", "Cierres por SL/TP", "Cierres Forzados"])
 
