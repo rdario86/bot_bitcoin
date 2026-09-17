@@ -20,14 +20,14 @@ with st.sidebar.form(key='panel_ajustes'):
     
     st.divider()
     
-    dias_historial = st.slider("Días de Backtesting", 1, 45, 30)
+    dias_historial = st.slider("Días de Backtesting", 1, 30, 45)
     
     opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 2.5: "1:2.50", 3.0: "1:3"}
     ratio_rr = st.selectbox(
         "Ratio Riesgo/Beneficio", 
         options=list(opciones_ratio.keys()), 
         format_func=lambda x: opciones_ratio[x],
-        index=4
+        index=2
     )
     
     ejecutar_btn = st.form_submit_button("Confirmar y Ejecutar")
