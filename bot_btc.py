@@ -5,13 +5,13 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
-st.set_page_config(page_title="BOT ORB Scalping (1 Minuto)", layout="wide")
+st.set_page_config(page_title="BOT ORB Scalping (Nasdaq) - 1 Min", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA Y CAPITAL
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ Ajustes Scalping (1 Min)")
+    st.header("⚙️ Ajustes Scalping NQ (1 Min)")
     
     st.subheader("💰 Gestión de Capital")
     capital_inicial = st.number_input("Bank / Capital Inicial ($)", min_value=100.0, value=1000.0, step=100.0)
@@ -19,7 +19,6 @@ with st.sidebar.form(key='panel_ajustes'):
     
     st.divider()
     
-    # Deslizador limitado a 30 días, con valor por defecto en 30
     dias_historial = st.slider("Días de Backtesting", 1, 30, 30)
     
     opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 2.5: "1:2.50", 3.0: "1:3"}
@@ -33,9 +32,9 @@ with st.sidebar.form(key='panel_ajustes'):
     ejecutar_btn = st.form_submit_button("Confirmar y Ejecutar")
 
 # ==========================================
-# 2. CONEXIÓN A BINGX (VELAS DE 1 MINUTO)
+# 2. CONEXIÓN A BINGX (NASDAQ 1 MINUTO)
 # ==========================================
-@st.cache_data(ttl=300, show_spinner="Descargando hasta 43,200 velas de BingX (Velas 1m)...")
+@st.cache_data(ttl=300, show_spinner="Descargando velas de Nasdaq (NQ) de BingX...")
 def obtener_datos_bingx(dias):
     try:
         exchange = ccxt.bingx({
@@ -52,7 +51,8 @@ def obtener_datos_bingx(dias):
         
         while True:
             try:
-                velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='1m', since=since, limit=limite_velas)
+                # CAMBIO AL Ticker DEL NASDAQ 100
+                velas = exchange.fetch_ohlcv('NQ/USDT:USDT', timeframe='1m', since=since, limit=limite_velas)
                 if not velas: break
                 
                 todas_las_velas.extend(velas)
@@ -81,13 +81,17 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (SCALPING ORB PURO)
+# 3. MOTOR DE BACKTESTING (SL ESTRUCTURAL)
 # ==========================================
 def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
     if df.empty: return pd.DataFrame(operaciones)
         
     df_calc = df.copy()
+    
+    # RADAR DE ESTRUCTURA RESTAURADO (Últimos 10 minutos)
+    df_calc['Swing_Low'] = df_calc['Low'].rolling(window=10).min()
+    df_calc['Swing_High'] = df_calc['High'].rolling(window=10).max()
         
     fechas = df_calc['Date'].unique()
     capital_actual = capital_inicial
@@ -112,13 +116,16 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             tipo_trade = None
             stop_loss = 0
             
+            # SL ESTRUCTURAL RESTAURADO
             if entrada > max_orb:
                 tipo_trade = 'Long 🟢'
-                stop_loss = min_orb # SL en el mínimo del rango
+                stop_loss = row['Swing_Low']
+                if stop_loss >= max_orb: stop_loss = min_orb 
                 
             elif entrada < min_orb:
                 tipo_trade = 'Short 🔴'
-                stop_loss = max_orb # SL en el máximo del rango
+                stop_loss = row['Swing_High']
+                if stop_loss <= min_orb: stop_loss = max_orb
                 
             if tipo_trade:
                 riesgo_precio = abs(entrada - stop_loss)
@@ -164,13 +171,13 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS (SÓLO SL/TP)
 # ==========================================
-st.title("📈 BOT Estrategia ORB - Scalping Estricto (1 Minuto)")
+st.title("📈 BOT Estrategia ORB - Nasdaq (Scalping Estructural 1M)")
 
-df_btc = obtener_datos_bingx(dias_historial)
-df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct)
+df_nq = obtener_datos_bingx(dias_historial)
+df_operaciones = ejecutar_backtest(df_nq, ratio_rr, capital_inicial, riesgo_pct)
 
-if df_btc.empty:
-    st.warning("No se pudieron cargar los datos (Es posible que el exchange limite la descarga a menos días). Intenta reducir los días de backtesting.")
+if df_nq.empty:
+    st.warning("No se pudieron cargar los datos del Nasdaq.")
 elif df_operaciones.empty:
     st.info("No se encontraron operaciones en el rango seleccionado.")
 else:
@@ -179,7 +186,7 @@ else:
     ganancia_neta_total = balance_final - capital_inicial
     rentabilidad_total = (ganancia_neta_total / capital_inicial) * 100
 
-    st.subheader("📊 Resumen de Rendimiento (Cierres por SL / TP)")
+    st.subheader("📊 Resumen de Rendimiento Nasdaq (SL Estructural)")
     
     aciertos_tot = len(df_operaciones[df_operaciones['Resultado'].str.contains("Ganancia")])
     fallos_tot = len(df_operaciones[df_operaciones['Resultado'].str.contains("Pérdida")])
@@ -212,7 +219,7 @@ else:
     
     st.divider()
     
-    st.subheader("🔍 Visualizador de Scalping (Velas 1 Minuto)")
+    st.subheader("🔍 Visualizador de Scalping Nasdaq (Velas 1 Minuto)")
     opciones_trades = df_operaciones['Fecha'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist()
     trade_seleccionado = st.selectbox("Selecciona la fecha del Trade:", opciones_trades)
     
@@ -221,20 +228,19 @@ else:
         fecha_obj = trade_data['Fecha']
         dia_str = fecha_obj.strftime('%Y-%m-%d')
         
-        inicio_grafico = (fecha_obj - pd.Timedelta(minutes=30)).strftime('%Y-%m-%d %H:%M:%S')
-        fin_grafico = (fecha_obj + pd.Timedelta(minutes=180)).strftime('%Y-%m-%d %H:%M:%S')
-        df_dia = df_btc.loc[inicio_grafico:fin_grafico]
+        inicio_grafico = (fecha_obj - pd.Timedelta(minutes=15)).strftime('%Y-%m-%d %H:%M:%S')
+        fin_grafico = (fecha_obj + pd.Timedelta(minutes=120)).strftime('%Y-%m-%d %H:%M:%S')
+        df_dia = df_nq.loc[inicio_grafico:fin_grafico]
         
         fig = go.Figure(data=[go.Candlestick(
             x=df_dia.index,
             open=df_dia['Open'], high=df_dia['High'],
             low=df_dia['Low'], close=df_dia['Close'],
-            name='BTC/USDT'
+            name='NQ/USDT'
         )])
         
-        # En esta versión, las líneas de Min_ORB y Max_ORB funcionan exactamente como las de SL
-        fig.add_hline(y=trade_data['Max_ORB_5m'], line_dash="dash", line_color="blue", annotation_text="Máx 5m (ORB)")
-        fig.add_hline(y=trade_data['Min_ORB_5m'], line_dash="dash", line_color="blue", annotation_text="Mín 5m (ORB)")
+        fig.add_hline(y=trade_data['Max_ORB_5m'], line_dash="dash", line_color="blue", annotation_text="Máx 5m")
+        fig.add_hline(y=trade_data['Min_ORB_5m'], line_dash="dash", line_color="blue", annotation_text="Mín 5m")
         
         color_flecha = "green" if "Long" in trade_data['Tipo'] else "red"
         simbolo_flecha = "triangle-up" if "Long" in trade_data['Tipo'] else "triangle-down"
@@ -245,13 +251,12 @@ else:
             marker=dict(symbol=simbolo_flecha, size=15, color=color_flecha)
         ))
         
-        # La línea de SL se superpondrá a la de ORB correspondiente, lo cual es visualmente correcto.
-        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss")
+        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="SL (Pivote Estructural)")
         fig.add_hline(y=trade_data['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
         
         fig.update_layout(
-            title=f"Scalp {trade_data['Tipo']} el {dia_str} | Resultado: {trade_data['Resultado']}",
-            yaxis_title="Precio (USD)",
+            title=f"Scalp Nasdaq {trade_data['Tipo']} el {dia_str} | Resultado: {trade_data['Resultado']}",
+            yaxis_title="Precio NQ (USD)",
             xaxis_title="Hora (EST - NY)",
             height=600,
             xaxis_rangeslider_visible=False,
