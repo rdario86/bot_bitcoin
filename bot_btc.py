@@ -5,59 +5,60 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
-st.set_page_config(page_title="BOT ORB Scalping (Nasdaq) - 1 Min", layout="wide")
+st.set_page_config(page_title="BOT ORB Scalping (Nasdaq)", layout="wide")
 
 # ==========================================
-# 1. PARÁMETROS DE LA ESTRATEGIA Y CAPITAL
+# 1. PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
+st.sidebar.markdown("### ⏱️ Temporalidad")
+# Selector externo para que el slider se actualice dinámicamente
+temporalidad = st.sidebar.radio(
+    "Resolución de Velas:", 
+    ["5 Minutos (Máx 60 días)", "1 Minuto (Máx 7 días)"], 
+    help="Yahoo Finance bloquea la descarga de 1 minuto más allá de los últimos 7 días. Usa 5 minutos para historial profundo."
+)
+
+es_1m = "1 Minuto" in temporalidad
+max_dias = 7 if es_1m else 60
+dias_defecto = 7 if es_1m else 30
+
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ Ajustes Scalping NQ (1 Min)")
+    st.header("⚙️ Ajustes Scalping NQ")
     
     st.subheader("💰 Gestión de Capital")
     capital_inicial = st.number_input("Bank / Capital Inicial ($)", min_value=100.0, value=1000.0, step=100.0)
-    riesgo_pct = st.selectbox("Riesgo por Operación (%)", options=[1, 2, 3, 4, 5], index=2, help="Porcentaje del balance arriesgado.")
+    riesgo_pct = st.selectbox("Riesgo por Operación (%)", options=[1, 2, 3, 4, 5], index=2)
     
     st.divider()
     
-    # yfinance permite máximo 7 días para historial de 1 minuto.
-    dias_historial = st.slider("Días de Backtesting (Máx 7 en 1m)", 1, 7, 7)
+    # El slider ahora es dinámico dependiendo de la temporalidad elegida
+    dias_historial = st.slider("Días de Backtesting", 1, max_dias, dias_defecto)
     
     opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 2.5: "1:2.50", 3.0: "1:3"}
-    ratio_rr = st.selectbox(
-        "Ratio Riesgo/Beneficio", 
-        options=list(opciones_ratio.keys()), 
-        format_func=lambda x: opciones_ratio[x],
-        index=4
-    )
+    ratio_rr = st.selectbox("Ratio Riesgo/Beneficio", options=list(opciones_ratio.keys()), format_func=lambda x: opciones_ratio[x], index=4)
     
     ejecutar_btn = st.form_submit_button("Confirmar y Ejecutar")
 
 # ==========================================
-# 2. CONEXIÓN A YAHOO FINANCE (NASDAQ 1 MINUTO)
+# 2. CONEXIÓN A YAHOO FINANCE
 # ==========================================
-@st.cache_data(ttl=300, show_spinner="Descargando velas de Nasdaq (NDX) desde Yahoo Finance...")
-def obtener_datos_nasdaq(dias):
+@st.cache_data(ttl=300, show_spinner="Descargando datos del Nasdaq (NDX) desde Yahoo Finance...")
+def obtener_datos_nasdaq(dias, es_1m):
     try:
-        # Yahoo Finance restringe la temporalidad de 1m a los últimos 7 días.
         ticker = "^NDX" 
-        df = yf.download(ticker, period=f"{dias}d", interval="1m", progress=False)
+        intervalo = "1m" if es_1m else "5m"
+        df = yf.download(ticker, period=f"{dias}d", interval=intervalo, progress=False)
         
         if df.empty:
             return pd.DataFrame()
             
-        # Limpieza y formateo del DataFrame de Yahoo
         df.reset_index(inplace=True)
-        # Yahoo Finance puede devolver las columnas como MultiIndex, las aplanamos
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
             
         df.rename(columns={'Datetime': 'Timestamp'}, inplace=True)
-        
-        # Asegurarnos de que el índice es de tipo Datetime y está en NY
         df['Timestamp'] = pd.to_datetime(df['Timestamp'])
         
-        # Yahoo ya suele entregar los datos de acciones de USA en horario de NY,
-        # pero forzamos la conversión para estar 100% seguros de que encaja con el algoritmo.
         if df['Timestamp'].dt.tz is None:
             df['Timestamp'] = df['Timestamp'].dt.tz_localize('America/New_York')
         else:
@@ -67,23 +68,24 @@ def obtener_datos_nasdaq(dias):
         df['Date'] = df.index.date
         
         return df
-    
     except Exception as e:
         st.error(f"Error de conexión con Yahoo Finance: {e}")
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (SL ESTRUCTURAL)
+# 3. MOTOR DE BACKTESTING DUAL (1m / 5m)
 # ==========================================
-def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
+def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct, es_1m):
     operaciones = []
     if df.empty: return pd.DataFrame(operaciones)
         
     df_calc = df.copy()
     
-    # RADAR DE ESTRUCTURA (Últimos 10 minutos)
-    df_calc['Swing_Low'] = df_calc['Low'].rolling(window=10).min()
-    df_calc['Swing_High'] = df_calc['High'].rolling(window=10).max()
+    # RADAR DE ESTRUCTURA (10 minutos)
+    # Si son velas de 1m miramos 10 velas. Si son de 5m miramos 2 velas.
+    ventanas_pivote = 10 if es_1m else 2
+    df_calc['Swing_Low'] = df_calc['Low'].rolling(window=ventanas_pivote).min()
+    df_calc['Swing_High'] = df_calc['High'].rolling(window=ventanas_pivote).max()
         
     fechas = df_calc['Date'].unique()
     capital_actual = capital_inicial
@@ -93,9 +95,14 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             
         df_dia = df_calc[df_calc['Date'] == fecha]
         
-        # 1. RANGO DE APERTURA (09:30 a 09:34 = 5 Minutos)
-        vela_apertura = df_dia.between_time('09:30', '09:34')
-        if len(vela_apertura) < 5: continue 
+        # 1. RANGO DE APERTURA
+        if es_1m:
+            vela_apertura = df_dia.between_time('09:30', '09:34')
+            if len(vela_apertura) < 5: continue 
+        else:
+            # En temporalidad de 5m, la vela de las 09:30 ya contiene todo el rango ORB
+            vela_apertura = df_dia.between_time('09:30', '09:30')
+            if len(vela_apertura) < 1: continue 
             
         max_orb = float(vela_apertura['High'].max())
         min_orb = float(vela_apertura['Low'].min())
@@ -108,7 +115,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             tipo_trade = None
             stop_loss = 0
             
-            # SL ESTRUCTURAL
             if entrada > max_orb:
                 tipo_trade = 'Long 🟢'
                 stop_loss = float(row['Swing_Low'])
@@ -166,10 +172,10 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("📈 BOT Estrategia ORB - Nasdaq (Scalping Estructural 1M)")
+st.title("📈 BOT Estrategia ORB - Nasdaq (Scalping Estructural)")
 
-df_nq = obtener_datos_nasdaq(dias_historial)
-df_operaciones = ejecutar_backtest(df_nq, ratio_rr, capital_inicial, riesgo_pct)
+df_nq = obtener_datos_nasdaq(dias_historial, es_1m)
+df_operaciones = ejecutar_backtest(df_nq, ratio_rr, capital_inicial, riesgo_pct, es_1m)
 
 if df_nq.empty:
     st.warning("No se pudieron cargar los datos del Nasdaq desde Yahoo Finance.")
@@ -214,7 +220,7 @@ else:
     
     st.divider()
     
-    st.subheader("🔍 Visualizador de Scalping Nasdaq (Velas 1 Minuto)")
+    st.subheader("🔍 Visualizador de Scalping Nasdaq")
     opciones_trades = df_operaciones['Fecha'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist()
     trade_seleccionado = st.selectbox("Selecciona la fecha del Trade:", opciones_trades)
     
@@ -223,8 +229,8 @@ else:
         fecha_obj = trade_data['Fecha']
         dia_str = fecha_obj.strftime('%Y-%m-%d')
         
-        inicio_grafico = (fecha_obj - pd.Timedelta(minutes=15)).strftime('%Y-%m-%d %H:%M:%S')
-        fin_grafico = (fecha_obj + pd.Timedelta(minutes=120)).strftime('%Y-%m-%d %H:%M:%S')
+        inicio_grafico = (fecha_obj - pd.Timedelta(minutes=30)).strftime('%Y-%m-%d %H:%M:%S')
+        fin_grafico = (fecha_obj + pd.Timedelta(minutes=180)).strftime('%Y-%m-%d %H:%M:%S')
         df_dia = df_nq.loc[inicio_grafico:fin_grafico]
         
         fig = go.Figure(data=[go.Candlestick(
