@@ -141,17 +141,18 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         resultado = "Sin Resolución ⏳"
                         riesgo_usd = capital_actual * (riesgo_pct / 100)
                         df_post = df_calc.loc[idx:]
-                        limite_tiempo = idx.replace(hour=16, minute=0, second=0)
+                        # MODIFICACIÓN: Límite de tiempo bajado a las 12:00
+                        limite_tiempo = idx.replace(hour=12, minute=0, second=0)
                         fecha_cierre = None 
                         
                         for jdx, vela in df_post.iterrows():
                             
-                            # Cierre de 16:00
+                            # Cierre de 12:00
                             if jdx >= limite_tiempo:
                                 precio_cierre = vela['Open']
                                 dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
                                 pnl_usd = (dist / riesgo_precio) * riesgo_usd
-                                resultado = "Ganancia (16:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (16:00) ⏱️❌"
+                                resultado = "Ganancia (12:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (12:00) ⏱️❌"
                                 fecha_cierre = jdx 
                                 break
                                 
@@ -191,9 +192,9 @@ if df_btc.empty:
 elif df_operaciones.empty:
     st.info("No se encontraron operaciones en este rango de tiempo. Es posible que los rompimientos no hayan hecho retesteo.")
 else:
-    # División de datos
-    df_regulares = df_operaciones[~df_operaciones['Resultado'].str.contains("16:00")]
-    df_tiempo = df_operaciones[df_operaciones['Resultado'].str.contains("16:00")]
+    # División de datos (Modificado para buscar "12:00")
+    df_regulares = df_operaciones[~df_operaciones['Resultado'].str.contains("12:00")]
+    df_tiempo = df_operaciones[df_operaciones['Resultado'].str.contains("12:00")]
 
     total_trades = len(df_operaciones)
     balance_final = capital_inicial + df_operaciones['PnL ($)'].sum()
@@ -290,7 +291,8 @@ else:
         fecha_obj = trade_data['Apertura (NY)']
         dia_str = fecha_obj.strftime('%Y-%m-%d')
         
-        df_dia = df_btc.loc[f"{dia_str} 08:30:00":f"{dia_str} 16:30:00"]
+        # MODIFICACIÓN: Gráfico centrado en la sesión de la mañana (hasta 12:30)
+        df_dia = df_btc.loc[f"{dia_str} 08:30:00":f"{dia_str} 12:30:00"]
         
         fig = go.Figure(data=[go.Candlestick(
             x=df_dia.index, open=df_dia['Open'], high=df_dia['High'],
