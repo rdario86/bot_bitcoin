@@ -106,8 +106,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             horario_us = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time >= pd.to_datetime('09:45').time()) & (df_calc.index.time <= pd.to_datetime('12:00').time())]
             
             estado_ruptura = None
-            vela_ruptura_tamano = 0
-            promedio_ruptura = 0
             
             for idx, row in horario_us.iterrows():
                 
@@ -119,12 +117,8 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     
                     if cierre > max_orb and pd.notna(prom) and tamano > prom:
                         estado_ruptura = 'Long'
-                        vela_ruptura_tamano = tamano
-                        promedio_ruptura = prom
                     elif cierre < min_orb and pd.notna(prom) and tamano > prom:
                         estado_ruptura = 'Short'
-                        vela_ruptura_tamano = tamano
-                        promedio_ruptura = prom
                 
                 # 2. BÚSQUEDA DE RETESTEO (Órdenes Limit)
                 else:
@@ -153,6 +147,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         riesgo_usd = capital_actual * (riesgo_pct / 100)
                         df_post = df_calc.loc[idx:]
                         limite_tiempo = idx.replace(hour=16, minute=0, second=0)
+                        fecha_cierre = None # <-- Variable para guardar la hora de cierre
                         
                         for jdx, vela in df_post.iterrows():
                             
@@ -162,21 +157,26 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                                 dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
                                 pnl_usd = (dist / riesgo_precio) * riesgo_usd
                                 resultado = "Ganancia (16:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (16:00) ⏱️❌"
+                                fecha_cierre = jdx # Guardamos la hora
                                 break
                                 
                             # Cierre por SL/TP
                             if ("Long" in tipo_trade and vela['Low'] <= stop_loss) or ("Short" in tipo_trade and vela['High'] >= stop_loss):
                                 resultado, pnl_usd = "Pérdida ❌", -riesgo_usd
+                                fecha_cierre = jdx # Guardamos la hora
                                 break
                             elif ("Long" in tipo_trade and vela['High'] >= take_profit) or ("Short" in tipo_trade and vela['Low'] <= take_profit):
                                 resultado, pnl_usd = "Ganancia ✅", riesgo_usd * ratio
+                                fecha_cierre = jdx # Guardamos la hora
                                 break
                         
                         capital_actual += pnl_usd
                         operaciones.append({
-                            'Fecha': idx, 'Tipo': tipo_trade, 'Entrada': entrada,
+                            'Apertura (NY)': idx, 
+                            'Cierre (NY)': fecha_cierre, # <--- Nueva columna de cierre
+                            'Tipo': tipo_trade, 'Entrada': entrada,
                             'Stop Loss': stop_loss, 'Take Profit': take_profit, 'Resultado': resultado,
-                            'Max_ORB': max_orb, 'Min_ORB': min_orb, 'Vela_Ruptura': vela_ruptura_tamano, 'Promedio_10_Velas': promedio_ruptura,
+                            'Max_ORB': max_orb, 'Min_ORB': min_orb,
                             'PnL ($)': pnl_usd, 'Balance': capital_actual
                         })
                         break # Termina el día tras el trade
@@ -274,24 +274,27 @@ else:
     df_mostrar = df_operaciones.copy()
     df_mostrar.index = range(1, len(df_mostrar) + 1)
     
+    # Formateo de fechas para que se vean legibles (YYYY-MM-DD HH:MM)
+    df_mostrar['Apertura (NY)'] = df_mostrar['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M')
+    df_mostrar['Cierre (NY)'] = df_mostrar['Cierre (NY)'].dt.strftime('%Y-%m-%d %H:%M')
+    
     columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit', 'PnL ($)', 'Balance']
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"-${abs(x):,.2f}" if pd.notnull(x) and x < 0 else f"${x:,.2f}" if pd.notnull(x) else x)
-        
-    df_mostrar['Expansión'] = (df_mostrar['Vela_Ruptura'] / df_mostrar['Promedio_10_Velas']).apply(lambda x: f"{x:.2f}x el prom.")
     
-    columnas_finales = ['Fecha', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Expansión', 'Resultado', 'PnL ($)', 'Balance']
+    # Aquí eliminamos la columna 'Expansión' de la lista final
+    columnas_finales = ['Apertura (NY)', 'Cierre (NY)', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado', 'PnL ($)', 'Balance']
     st.dataframe(df_mostrar[columnas_finales], use_container_width=True)
     
     st.divider()
     
     st.subheader("🔍 Visualizador de Operaciones (Velas de 15 Minutos)")
-    opciones_trades = df_operaciones['Fecha'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist()
-    trade_seleccionado = st.selectbox("Selecciona la fecha del Trade:", opciones_trades)
+    opciones_trades = df_operaciones['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M').tolist()
+    trade_seleccionado = st.selectbox("Selecciona la fecha de Apertura del Trade:", opciones_trades)
     
     if trade_seleccionado:
-        trade_data = df_operaciones[df_operaciones['Fecha'].dt.strftime('%Y-%m-%d %H:%M:%S') == trade_seleccionado].iloc[0]
-        fecha_obj = trade_data['Fecha']
+        trade_data = df_operaciones[df_operaciones['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M') == trade_seleccionado].iloc[0]
+        fecha_obj = trade_data['Apertura (NY)']
         dia_str = fecha_obj.strftime('%Y-%m-%d')
         
         df_dia = df_btc.loc[f"{dia_str} 08:30:00":f"{dia_str} 16:30:00"]
