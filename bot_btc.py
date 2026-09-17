@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
+# Título actualizado en la pestaña del navegador
 st.set_page_config(page_title="BOT ORB (30 Min) - Bitcoin", layout="wide")
 
 # ==========================================
@@ -51,7 +52,6 @@ def obtener_datos_bingx(dias):
         
         while True:
             try:
-                # CAMBIADO A VELAS DE 5 MINUTOS
                 velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='5m', since=since, limit=limite_velas)
                 if not velas: break
                 
@@ -90,11 +90,18 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
         
     df_calc = df.copy()
     
-    # RADAR DE ESTRUCTURA: Buscamos el pivote de las últimas 3 velas (15 minutos)
-    df_calc['Swing_Low'] = df_calc['Low'].rolling(window=3).min()
-    df_calc['Swing_High'] = df_calc['High'].rolling(window=3).max()
+    # 1. Definir Pivotes Estructurales en 5m
+    df_calc['Pivote_Bajo'] = (df_calc['Low'] < df_calc['Low'].shift(1)) & (df_calc['Low'] < df_calc['Low'].shift(-1))
+    df_calc['Pivote_Alto'] = (df_calc['High'] > df_calc['High'].shift(1)) & (df_calc['High'] > df_calc['High'].shift(-1))
     
-    # Mantenemos el filtro de expansión de volatilidad (promedio de 10 velas anteriores)
+    # Propagar el último valor de pivote conocido hacia adelante
+    df_calc['Ultimo_Soporte'] = df_calc.loc[df_calc['Pivote_Bajo'], 'Low']
+    df_calc['Ultimo_Soporte'] = df_calc['Ultimo_Soporte'].ffill()
+    
+    df_calc['Ultima_Resistencia'] = df_calc.loc[df_calc['Pivote_Alto'], 'High']
+    df_calc['Ultima_Resistencia'] = df_calc['Ultima_Resistencia'].ffill()
+
+    # 2. Filtro de Expansión de Volatilidad
     df_calc['Tamaño_Vela'] = df_calc['High'] - df_calc['Low']
     df_calc['Promedio_Tamaño_10'] = df_calc['Tamaño_Vela'].shift(1).rolling(window=10).mean()
         
@@ -107,18 +114,18 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             
         df_dia = df_calc[df_calc['Date'] == fecha]
         
-        # 1. RANGO DE APERTURA (09:30 a 09:55 = 30 Minutos)
+        # RANGO DE APERTURA (09:30 a 09:55 = 30 Minutos)
         vela_apertura = df_dia.between_time('09:30', '09:55')
-        if len(vela_apertura) < 6: continue # Aseguramos tener las 6 velas de 5m
+        if len(vela_apertura) < 6: continue 
             
         max_orb = vela_apertura['High'].max()
         min_orb = vela_apertura['Low'].min()
         
-        # 2. BÚSQUEDA DE ENTRADA (Desde las 10:00 hasta las 12:00)
+        # BÚSQUEDA DE ENTRADA (Desde las 10:00 hasta las 12:00)
         horario_operativo = df_dia.between_time('10:00', '12:00')
         
         for idx, row in horario_operativo.iterrows():
-            entrada = row['Close'] # Rompimiento con CUERPO de vela
+            entrada = row['Close'] 
             tamano = row['Tamaño_Vela']
             prom = row['Promedio_Tamaño_10']
             tipo_trade = None
@@ -127,15 +134,20 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             # Validación de Long
             if entrada > max_orb and pd.notna(prom) and tamano > prom:
                 tipo_trade = 'Long 🟢'
-                stop_loss = row['Swing_Low']
-                # Si el pivote de 15m es muy apretado o quedó por encima del rango, anclamos al mínimo del ORB
-                if stop_loss >= max_orb: stop_loss = min_orb 
+                stop_loss = row['Ultimo_Soporte']
+                
+                # Seguridad: Si no hay pivote o está muy arriba, usamos el mínimo del ORB
+                if pd.isna(stop_loss) or stop_loss >= max_orb:
+                     stop_loss = min_orb 
                 
             # Validación de Short
             elif entrada < min_orb and pd.notna(prom) and tamano > prom:
                 tipo_trade = 'Short 🔴'
-                stop_loss = row['Swing_High']
-                if stop_loss <= min_orb: stop_loss = max_orb
+                stop_loss = row['Ultima_Resistencia']
+                
+                # Seguridad: Si no hay pivote o está muy abajo, usamos el máximo del ORB
+                if pd.isna(stop_loss) or stop_loss <= min_orb:
+                     stop_loss = max_orb
                 
             if tipo_trade:
                 riesgo_precio = abs(entrada - stop_loss)
@@ -152,7 +164,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 for jdx, vela in df_post_entrada.iterrows():
                     if jdx == idx: continue 
                     
-                    # 1. Cierre por Tiempo
                     if jdx.time() >= hora_cierre_tiempo:
                         precio_cierre = vela['Open']
                         dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
@@ -160,7 +171,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         resultado = "Ganancia (16:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (16:00) ⏱️❌"
                         break
                     
-                    # 2. Cierre por SL/TP
                     if "Long" in tipo_trade:
                         if vela['Low'] <= stop_loss:
                             resultado, pnl_usd = "Pérdida ❌", -riesgo_usd
@@ -315,7 +325,7 @@ else:
             marker=dict(symbol=simbolo_flecha, size=15, color=color_flecha)
         ))
         
-        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Estructural 15m)")
+        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Pivote)")
         fig.add_hline(y=trade_data['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
         
         fig.update_layout(
