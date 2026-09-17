@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
-# Título actualizado en la pestaña del navegador
 st.set_page_config(page_title="BOT Estrategia ORB (Retesteo) - Bitcoin", layout="wide")
 
 # ==========================================
@@ -89,8 +88,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     if df.empty: return pd.DataFrame(operaciones)
         
     df_calc = df.copy()
-    df_calc['Tamaño_Vela'] = df_calc['High'] - df_calc['Low']
-    df_calc['Promedio_Tamaño_10'] = df_calc['Tamaño_Vela'].shift(1).rolling(window=10).mean()
         
     fechas = df_calc['Date'].unique()
     capital_actual = capital_inicial
@@ -109,15 +106,13 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             
             for idx, row in horario_us.iterrows():
                 
-                # 1. BÚSQUEDA DE RUPTURA INICIAL
+                # 1. BÚSQUEDA DE RUPTURA INICIAL (PURA ACCIÓN DE PRECIO)
                 if estado_ruptura is None:
                     cierre = row['Close']
-                    tamano = row['Tamaño_Vela']
-                    prom = row['Promedio_Tamaño_10']
                     
-                    if cierre > max_orb and pd.notna(prom) and tamano > prom:
+                    if cierre > max_orb:
                         estado_ruptura = 'Long'
-                    elif cierre < min_orb and pd.notna(prom) and tamano > prom:
+                    elif cierre < min_orb:
                         estado_ruptura = 'Short'
                 
                 # 2. BÚSQUEDA DE RETESTEO (Órdenes Limit)
@@ -147,7 +142,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         riesgo_usd = capital_actual * (riesgo_pct / 100)
                         df_post = df_calc.loc[idx:]
                         limite_tiempo = idx.replace(hour=16, minute=0, second=0)
-                        fecha_cierre = None # <-- Variable para guardar la hora de cierre
+                        fecha_cierre = None 
                         
                         for jdx, vela in df_post.iterrows():
                             
@@ -157,23 +152,23 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                                 dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
                                 pnl_usd = (dist / riesgo_precio) * riesgo_usd
                                 resultado = "Ganancia (16:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (16:00) ⏱️❌"
-                                fecha_cierre = jdx # Guardamos la hora
+                                fecha_cierre = jdx 
                                 break
                                 
                             # Cierre por SL/TP
                             if ("Long" in tipo_trade and vela['Low'] <= stop_loss) or ("Short" in tipo_trade and vela['High'] >= stop_loss):
                                 resultado, pnl_usd = "Pérdida ❌", -riesgo_usd
-                                fecha_cierre = jdx # Guardamos la hora
+                                fecha_cierre = jdx 
                                 break
                             elif ("Long" in tipo_trade and vela['High'] >= take_profit) or ("Short" in tipo_trade and vela['Low'] <= take_profit):
                                 resultado, pnl_usd = "Ganancia ✅", riesgo_usd * ratio
-                                fecha_cierre = jdx # Guardamos la hora
+                                fecha_cierre = jdx 
                                 break
                         
                         capital_actual += pnl_usd
                         operaciones.append({
                             'Apertura (NY)': idx, 
-                            'Cierre (NY)': fecha_cierre, # <--- Nueva columna de cierre
+                            'Cierre (NY)': fecha_cierre, 
                             'Tipo': tipo_trade, 'Entrada': entrada,
                             'Stop Loss': stop_loss, 'Take Profit': take_profit, 'Resultado': resultado,
                             'Max_ORB': max_orb, 'Min_ORB': min_orb,
@@ -274,7 +269,6 @@ else:
     df_mostrar = df_operaciones.copy()
     df_mostrar.index = range(1, len(df_mostrar) + 1)
     
-    # Formateo de fechas para que se vean legibles (YYYY-MM-DD HH:MM)
     df_mostrar['Apertura (NY)'] = df_mostrar['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M')
     df_mostrar['Cierre (NY)'] = df_mostrar['Cierre (NY)'].dt.strftime('%Y-%m-%d %H:%M')
     
@@ -282,7 +276,6 @@ else:
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"-${abs(x):,.2f}" if pd.notnull(x) and x < 0 else f"${x:,.2f}" if pd.notnull(x) else x)
     
-    # Aquí eliminamos la columna 'Expansión' de la lista final
     columnas_finales = ['Apertura (NY)', 'Cierre (NY)', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado', 'PnL ($)', 'Balance']
     st.dataframe(df_mostrar[columnas_finales], use_container_width=True)
     
@@ -310,7 +303,6 @@ else:
         color_flecha = "green" if "Long" in trade_data['Tipo'] else "red"
         simbolo_flecha = "triangle-up" if "Long" in trade_data['Tipo'] else "triangle-down"
         
-        # El marcador se dibuja exactamente sobre la vela que tocó el nivel (el retesteo)
         fig.add_trace(go.Scatter(
             x=[fecha_obj], y=[trade_data['Entrada']], mode='markers', name='Punto de Entrada (Pullback)',
             marker=dict(symbol=simbolo_flecha, size=15, color=color_flecha)
