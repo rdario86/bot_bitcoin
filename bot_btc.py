@@ -19,7 +19,8 @@ with st.sidebar.form(key='panel_ajustes'):
     
     st.divider()
     
-    dias_historial = st.slider("Días de Backtesting", 1, 15, 7)
+    # Deslizador limitado a 30 días, con valor por defecto en 30
+    dias_historial = st.slider("Días de Backtesting", 1, 30, 30)
     
     opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 2.5: "1:2.50", 3.0: "1:3"}
     ratio_rr = st.selectbox(
@@ -34,7 +35,7 @@ with st.sidebar.form(key='panel_ajustes'):
 # ==========================================
 # 2. CONEXIÓN A BINGX (VELAS DE 1 MINUTO)
 # ==========================================
-@st.cache_data(ttl=300, show_spinner="Descargando datos de BingX (Velas de 1 minuto)...")
+@st.cache_data(ttl=300, show_spinner="Descargando hasta 43,200 velas de BingX (Velas 1m)...")
 def obtener_datos_bingx(dias):
     try:
         exchange = ccxt.bingx({
@@ -135,13 +136,11 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 pnl_usd = 0.0
                 riesgo_usd = capital_actual * (riesgo_pct / 100)
                 
-                # Buscamos la resolución en el dataset completo (por si tarda más del día actual)
                 df_post_entrada = df_calc.loc[idx:]
                 
                 for jdx, vela in df_post_entrada.iterrows():
                     if jdx == idx: continue 
                     
-                    # Validación exclusiva por SL o TP (Sin límite de tiempo)
                     if "Long" in tipo_trade:
                         if vela['Low'] <= stop_loss:
                             resultado, pnl_usd = "Pérdida ❌", -riesgo_usd
@@ -177,7 +176,7 @@ df_btc = obtener_datos_bingx(dias_historial)
 df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct)
 
 if df_btc.empty:
-    st.warning("No se pudieron cargar los datos.")
+    st.warning("No se pudieron cargar los datos (Es posible que el exchange limite la descarga a menos días). Intenta reducir los días de backtesting.")
 elif df_operaciones.empty:
     st.info("No se encontraron operaciones en el rango seleccionado.")
 else:
