@@ -95,12 +95,14 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     for fecha in fechas:
         if fecha.weekday() >= 5: continue 
             
+        # 1. Fijar el ORB con la vela de las 09:30
         vela_us = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time == pd.to_datetime('09:30').time())]
         if not vela_us.empty:
             max_orb = vela_us['High'].iloc[0]
             min_orb = vela_us['Low'].iloc[0]
             
-            horario_us = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time >= pd.to_datetime('09:45').time()) & (df_calc.index.time <= pd.to_datetime('12:00').time())]
+            # --- MODIFICACIÓN CLAVE: Límite de búsqueda reducido a las 10:30 (la vela que cierra a las 10:45) ---
+            horario_us = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time >= pd.to_datetime('09:45').time()) & (df_calc.index.time <= pd.to_datetime('10:30').time())]
             
             estado_ruptura = None
             
@@ -141,22 +143,23 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         resultado = "Sin Resolución ⏳"
                         riesgo_usd = capital_actual * (riesgo_pct / 100)
                         df_post = df_calc.loc[idx:]
-                        # MODIFICACIÓN: Límite de tiempo bajado a las 12:00
+                        
+                        # CIERRE AUTOMÁTICO DE EMERGENCIA (12:00)
                         limite_tiempo = idx.replace(hour=12, minute=0, second=0)
                         fecha_cierre = None 
                         
                         for jdx, vela in df_post.iterrows():
                             
-                            # Cierre de 12:00
+                            # Guillotina por tiempo a las 12:00
                             if jdx >= limite_tiempo:
-                                precio_cierre = vela['Open']
+                                precio_cierre = vela['Open'] # Cierra en la apertura de la vela de las 12:00
                                 dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
                                 pnl_usd = (dist / riesgo_precio) * riesgo_usd
                                 resultado = "Ganancia (12:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (12:00) ⏱️❌"
                                 fecha_cierre = jdx 
                                 break
                                 
-                            # Cierre por SL/TP
+                            # Cierre por alcanzar Stop Loss o Take Profit
                             if ("Long" in tipo_trade and vela['Low'] <= stop_loss) or ("Short" in tipo_trade and vela['High'] >= stop_loss):
                                 resultado, pnl_usd = "Pérdida ❌", -riesgo_usd
                                 fecha_cierre = jdx 
@@ -166,6 +169,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                                 fecha_cierre = jdx 
                                 break
                         
+                        # Actualización de capital de interés compuesto
                         capital_actual += pnl_usd
                         operaciones.append({
                             'Apertura (NY)': idx, 
@@ -175,7 +179,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                             'Max_ORB': max_orb, 'Min_ORB': min_orb,
                             'PnL ($)': pnl_usd, 'Balance': capital_actual
                         })
-                        break # Termina el día tras el trade
+                        break # Si ejecutó el trade, deja de buscar más oportunidades ese día
 
     return pd.DataFrame(operaciones)
 
@@ -192,7 +196,7 @@ if df_btc.empty:
 elif df_operaciones.empty:
     st.info("No se encontraron operaciones en este rango de tiempo. Es posible que los rompimientos no hayan hecho retesteo.")
 else:
-    # División de datos (Modificado para buscar "12:00")
+    # División de datos enfocada a los cierres al mediodía
     df_regulares = df_operaciones[~df_operaciones['Resultado'].str.contains("12:00")]
     df_tiempo = df_operaciones[df_operaciones['Resultado'].str.contains("12:00")]
 
@@ -291,7 +295,7 @@ else:
         fecha_obj = trade_data['Apertura (NY)']
         dia_str = fecha_obj.strftime('%Y-%m-%d')
         
-        # MODIFICACIÓN: Gráfico centrado en la sesión de la mañana (hasta 12:30)
+        # Gráfico adaptado para mostrar la sesión desde las 08:30 hasta las 12:30 (la hora del cierre)
         df_dia = df_btc.loc[f"{dia_str} 08:30:00":f"{dia_str} 12:30:00"]
         
         fig = go.Figure(data=[go.Candlestick(
