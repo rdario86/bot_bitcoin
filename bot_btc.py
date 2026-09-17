@@ -6,13 +6,13 @@ from datetime import timedelta
 import time
 
 # Título actualizado en la pestaña del navegador
-st.set_page_config(page_title="BOT ORB (15 Min) - Bitcoin", layout="wide")
+st.set_page_config(page_title="BOT ORB (15 Min) - Velas 3m", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA Y CAPITAL
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ Ajustes ORB (Velas 5m)")
+    st.header("⚙️ Ajustes ORB (Velas 3m)")
     
     st.subheader("💰 Gestión de Capital")
     capital_inicial = st.number_input("Bank / Capital Inicial ($)", min_value=100.0, value=1000.0, step=100.0)
@@ -33,9 +33,9 @@ with st.sidebar.form(key='panel_ajustes'):
     ejecutar_btn = st.form_submit_button("Confirmar y Ejecutar")
 
 # ==========================================
-# 2. CONEXIÓN A BINGX (VELAS DE 5 MINUTOS)
+# 2. CONEXIÓN A BINGX (VELAS DE 3 MINUTOS)
 # ==========================================
-@st.cache_data(ttl=300, show_spinner="Descargando datos de BingX Futuros (5m)...")
+@st.cache_data(ttl=300, show_spinner="Descargando datos de BingX Futuros (3m)...")
 def obtener_datos_bingx(dias):
     try:
         exchange = ccxt.bingx({
@@ -52,11 +52,12 @@ def obtener_datos_bingx(dias):
         
         while True:
             try:
-                velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='5m', since=since, limit=limite_velas)
+                # CAMBIADO A VELAS DE 3 MINUTOS
+                velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='3m', since=since, limit=limite_velas)
                 if not velas: break
                 
                 todas_las_velas.extend(velas)
-                since = velas[-1][0] + 300000 # 5 Minutos en milisegundos
+                since = velas[-1][0] + 180000 # 3 Minutos en milisegundos
                 
                 if len(velas) < limite_velas: break 
                 time.sleep(0.1) 
@@ -90,7 +91,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
         
     df_calc = df.copy()
     
-    # 1. Definir Pivotes Estructurales en 5m
+    # 1. Definir Pivotes Estructurales en 3m
     df_calc['Pivote_Bajo'] = (df_calc['Low'] < df_calc['Low'].shift(1)) & (df_calc['Low'] < df_calc['Low'].shift(-1))
     df_calc['Pivote_Alto'] = (df_calc['High'] > df_calc['High'].shift(1)) & (df_calc['High'] > df_calc['High'].shift(-1))
     
@@ -114,9 +115,9 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             
         df_dia = df_calc[df_calc['Date'] == fecha]
         
-        # RANGO DE APERTURA (09:30 a 09:44 = 15 Minutos) -> Velas de 09:30, 09:35 y 09:40
-        vela_apertura = df_dia.between_time('09:30', '09:40')
-        if len(vela_apertura) < 3: continue 
+        # RANGO DE APERTURA (09:30 a 09:44 = 15 Minutos -> 5 velas de 3m)
+        vela_apertura = df_dia.between_time('09:30', '09:44')
+        if len(vela_apertura) < 5: continue 
             
         max_orb = vela_apertura['High'].max()
         min_orb = vela_apertura['Low'].min()
@@ -200,7 +201,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("📈 BOT Estrategia ORB 15 Minutos (Velas 5m)")
+st.title("📈 BOT Estrategia ORB 15 Minutos (Velas 3m)")
 
 df_btc = obtener_datos_bingx(dias_historial)
 df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct)
@@ -298,7 +299,7 @@ else:
     
     st.divider()
     
-    st.subheader("🔍 Visualizador de Operaciones (Velas de 5 Minutos)")
+    st.subheader("🔍 Visualizador de Operaciones (Velas de 3 Minutos)")
     opciones_trades = df_operaciones['Fecha'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist()
     trade_seleccionado = st.selectbox("Selecciona la fecha del Trade:", opciones_trades)
     
