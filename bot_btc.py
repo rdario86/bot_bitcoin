@@ -92,6 +92,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
         
     fechas = df_calc['Date'].unique()
     capital_actual = capital_inicial
+    comision_taker = 0.0005 # 0.05% por orden a mercado en BingX Futuros
     
     for fecha in fechas:
         if fecha.weekday() >= 5: continue 
@@ -170,37 +171,53 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         # CIERRE AUTOMÁTICO DE EMERGENCIA (11:00 NY)
                         limite_tiempo = idx.replace(hour=11, minute=0, second=0)
                         fecha_cierre = None 
+                        precio_salida = None
                         
                         for jdx, vela in df_post.iterrows():
                             
                             # Guillotina por tiempo a las 11:00
                             if jdx >= limite_tiempo:
-                                precio_cierre = vela['Open'] 
-                                dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
-                                pnl_usd = (dist / riesgo_precio) * riesgo_usd
-                                resultado = "Ganancia (11:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (11:00) ⏱️❌"
+                                precio_salida = vela['Open'] 
+                                dist = (precio_salida - entrada) if "Long" in tipo_trade else (entrada - precio_salida)
+                                pnl_usd_bruto = (dist / riesgo_precio) * riesgo_usd
+                                resultado = "Ganancia (11:00) ⏱️✅" if pnl_usd_bruto > 0 else "Pérdida (11:00) ⏱️❌"
                                 fecha_cierre = jdx 
                                 break
                                 
                             # Cierre por alcanzar Stop Loss o Take Profit
                             if ("Long" in tipo_trade and vela['Low'] <= stop_loss) or ("Short" in tipo_trade and vela['High'] >= stop_loss):
-                                resultado, pnl_usd = "Pérdida ❌", -riesgo_usd
+                                resultado, pnl_usd_bruto = "Pérdida ❌", -riesgo_usd
+                                precio_salida = stop_loss
                                 fecha_cierre = jdx 
                                 break
                             elif ("Long" in tipo_trade and vela['High'] >= take_profit) or ("Short" in tipo_trade and vela['Low'] <= take_profit):
-                                resultado, pnl_usd = "Ganancia ✅", riesgo_usd * ratio
+                                resultado, pnl_usd_bruto = "Ganancia ✅", riesgo_usd * ratio
+                                precio_salida = take_profit
                                 fecha_cierre = jdx 
                                 break
                         
-                        capital_actual += pnl_usd
-                        operaciones.append({
-                            'Apertura (NY)': idx, 
-                            'Cierre (NY)': fecha_cierre, 
-                            'Tipo': tipo_trade, 'Entrada': entrada,
-                            'Stop Loss': stop_loss, 'Take Profit': take_profit, 'Resultado': resultado,
-                            'Max_ORB': max_orb, 'Min_ORB': min_orb,
-                            'PnL ($)': pnl_usd, 'Balance': capital_actual
-                        })
+                        if precio_salida is not None:
+                            # Cálculo de Comisiones (Monto de la posición * % de comisión)
+                            tamano_posicion_usd = (riesgo_usd / riesgo_precio) * entrada
+                            comision_apertura = tamano_posicion_usd * comision_taker
+                            
+                            tamano_posicion_cierre_usd = (riesgo_usd / riesgo_precio) * precio_salida
+                            comision_cierre = tamano_posicion_cierre_usd * comision_taker
+                            
+                            total_comisiones = comision_apertura + comision_cierre
+                            pnl_usd_neto = pnl_usd_bruto - total_comisiones
+                            
+                            capital_actual += pnl_usd_neto
+                            operaciones.append({
+                                'Apertura (NY)': idx, 
+                                'Cierre (NY)': fecha_cierre, 
+                                'Tipo': tipo_trade, 'Entrada': entrada,
+                                'Stop Loss': stop_loss, 'Take Profit': take_profit, 'Resultado': resultado,
+                                'Max_ORB': max_orb, 'Min_ORB': min_orb,
+                                'Comisiones ($)': total_comisiones,
+                                'PnL Bruto ($)': pnl_usd_bruto,
+                                'PnL Neto ($)': pnl_usd_neto, 'Balance': capital_actual
+                            })
                         break 
 
     return pd.DataFrame(operaciones)
@@ -222,11 +239,13 @@ else:
     df_tiempo = df_operaciones[df_operaciones['Resultado'].str.contains("11:00")]
 
     total_trades = len(df_operaciones)
-    balance_final = capital_inicial + df_operaciones['PnL ($)'].sum()
-    ganancia_neta = df_operaciones['PnL ($)'].sum()
-    rentabilidad = (ganancia_neta / capital_inicial) * 100
+    balance_final = capital_inicial + df_operaciones['PnL Neto ($)'].sum()
+    ganancia_neta_real = df_operaciones['PnL Neto ($)'].sum()
+    ganancia_neta_bruta = df_operaciones['PnL Bruto ($)'].sum()
+    total_comisiones_pagadas = df_operaciones['Comisiones ($)'].sum()
+    rentabilidad = (ganancia_neta_real / capital_inicial) * 100
 
-    st.subheader(f"📊 Resumen de Rendimiento - Breakout & Pullback Confirmado")
+    st.subheader(f"📊 Resumen de Rendimiento Neto - Breakout & Pullback Confirmado")
     
     tab1, tab2, tab3 = st.tabs(["Totales (Suma)", "Cierres por SL/TP", "Cierres Forzados"])
 
@@ -243,9 +262,9 @@ else:
         
         c5, c6, c7, c8 = st.columns(4)
         c5.metric("Capital Referencia", f"${capital_inicial:,.2f}")
-        c6.metric("Balance Proyectado", f"${balance_final:,.2f}")
-        c7.metric("PnL Neto ($)", f"${ganancia_neta:,.2f}", delta_color="normal" if ganancia_neta >= 0 else "inverse")
-        c8.metric("Rentabilidad (%)", f"{rentabilidad:.2f}%")
+        c6.metric("Comisiones Pagadas", f"-${total_comisiones_pagadas:,.2f}")
+        c7.metric("PnL Neto Real ($)", f"${ganancia_neta_real:,.2f}", delta_color="normal" if ganancia_neta_real >= 0 else "inverse")
+        c8.metric("Rentabilidad Neta (%)", f"{rentabilidad:.2f}%")
 
     with tab2:
         total_reg = len(df_regulares)
@@ -253,7 +272,7 @@ else:
             aciertos_reg = len(df_regulares[df_regulares['Resultado'] == "Ganancia ✅"])
             fallos_reg = len(df_regulares[df_regulares['Resultado'] == "Pérdida ❌"])
             wr_reg = (aciertos_reg / total_reg) * 100
-            pnl_reg = df_regulares['PnL ($)'].sum()
+            pnl_reg = df_regulares['PnL Neto ($)'].sum()
             rent_reg = (pnl_reg / capital_inicial) * 100
 
             c1, c2, c3, c4 = st.columns(4)
@@ -274,7 +293,7 @@ else:
             aciertos_tmp = len(df_tiempo[df_tiempo['Resultado'].str.contains("Ganancia")])
             fallos_tmp = len(df_tiempo[df_tiempo['Resultado'].str.contains("Pérdida")])
             wr_tmp = (aciertos_tmp / total_tmp) * 100
-            pnl_tmp = df_tiempo['PnL ($)'].sum()
+            pnl_tmp = df_tiempo['PnL Neto ($)'].sum()
             rent_tmp = (pnl_tmp / capital_inicial) * 100
 
             c1, c2, c3, c4 = st.columns(4)
@@ -291,18 +310,18 @@ else:
             
     st.divider()
     
-    st.subheader("📋 Registro Detallado")
+    st.subheader("📋 Registro Detallado (Incluyendo Comisiones)")
     df_mostrar = df_operaciones.copy()
     df_mostrar.index = range(1, len(df_mostrar) + 1)
     
     df_mostrar['Apertura (NY)'] = df_mostrar['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M')
     df_mostrar['Cierre (NY)'] = df_mostrar['Cierre (NY)'].dt.strftime('%Y-%m-%d %H:%M')
     
-    columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit', 'PnL ($)', 'Balance']
+    columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit', 'Comisiones ($)', 'PnL Bruto ($)', 'PnL Neto ($)', 'Balance']
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"-${abs(x):,.2f}" if pd.notnull(x) and x < 0 else f"${x:,.2f}" if pd.notnull(x) else x)
     
-    columnas_finales = ['Apertura (NY)', 'Cierre (NY)', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado', 'PnL ($)', 'Balance']
+    columnas_finales = ['Apertura (NY)', 'Cierre (NY)', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado', 'Comisiones ($)', 'PnL Neto ($)', 'Balance']
     st.dataframe(df_mostrar[columnas_finales], use_container_width=True)
     
     st.divider()
