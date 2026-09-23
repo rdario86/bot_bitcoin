@@ -160,6 +160,9 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         
                         if riesgo_precio == 0: riesgo_precio = 0.01 
                         
+                        # --- CÁLCULO DEL PORCENTAJE DEL STOP LOSS ---
+                        porcentaje_sl = (riesgo_precio / entrada) * 100
+                        
                         take_profit = entrada + (riesgo_precio * ratio) if "Long" in tipo_trade else entrada - (riesgo_precio * ratio)
                         
                         resultado = "Sin Resolución ⏳"
@@ -197,7 +200,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                             'Apertura (NY)': idx, 
                             'Cierre (NY)': fecha_cierre, 
                             'Tipo': tipo_trade, 'Entrada': entrada,
-                            'Stop Loss': stop_loss, 'Take Profit': take_profit, 'Resultado': resultado,
+                            'Stop Loss': stop_loss, 'Tamaño SL (%)': porcentaje_sl, 'Take Profit': take_profit, 'Resultado': resultado,
                             'Max_ORB': max_orb, 'Min_ORB': min_orb,
                             'PnL ($)': pnl_usd, 'Balance': capital_actual
                         })
@@ -301,8 +304,10 @@ else:
     columnas_moneda = ['Entrada', 'Stop Loss', 'Take Profit', 'PnL ($)', 'Balance']
     for col in columnas_moneda:
         df_mostrar[col] = df_mostrar[col].apply(lambda x: f"-${abs(x):,.2f}" if pd.notnull(x) and x < 0 else f"${x:,.2f}" if pd.notnull(x) else x)
+        
+    df_mostrar['Tamaño SL (%)'] = df_mostrar['Tamaño SL (%)'].apply(lambda x: f"{x:.2f}%")
     
-    columnas_finales = ['Apertura (NY)', 'Cierre (NY)', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado', 'PnL ($)', 'Balance']
+    columnas_finales = ['Apertura (NY)', 'Cierre (NY)', 'Tipo', 'Entrada', 'Stop Loss', 'Tamaño SL (%)', 'Take Profit', 'Resultado', 'PnL ($)', 'Balance']
     st.dataframe(df_mostrar[columnas_finales], use_container_width=True)
     
     st.divider()
