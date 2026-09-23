@@ -27,7 +27,7 @@ with st.sidebar.form(key='panel_ajustes'):
         "Ratio Riesgo/Beneficio", 
         options=list(opciones_ratio.keys()), 
         format_func=lambda x: opciones_ratio[x],
-        index=2
+        index=3
     )
     
     ejecutar_btn = st.form_submit_button("Confirmar y Ejecutar")
