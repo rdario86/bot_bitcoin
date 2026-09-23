@@ -19,7 +19,8 @@ with st.sidebar.form(key='panel_ajustes'):
     
     st.divider()
     
-    dias_historial = st.slider("Días de Backtesting", 1, 45, 15) # Reducido un poco el default por la carga pesada de 1 minuto
+    # MODIFICACIÓN: Límite máximo de 30 días
+    dias_historial = st.slider("Días de Backtesting", 1, 30, 15, help="Limitado a un máximo de 30 días.")
     
     opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 2.5: "1:2.50", 3.0: "1:3"}
     ratio_rr = st.selectbox(
@@ -55,7 +56,7 @@ def obtener_datos_bingx(dias):
                 if not velas: break
                 
                 todas_las_velas.extend(velas)
-                since = velas[-1][0] + 60000 # Sumar 1 minuto (60,000 ms) para la siguiente petición
+                since = velas[-1][0] + 60000 
                 
                 if len(velas) < limite_velas: break 
                 time.sleep(0.1) 
@@ -101,16 +102,16 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
         
         velas_orb = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time >= hora_inicio_orb) & (df_calc.index.time <= hora_fin_orb)]
         
-        if len(velas_orb) == 5: # Asegurarse de tener los 5 minutos completos
+        if len(velas_orb) == 5: 
             max_orb = velas_orb['High'].max()
             min_orb = velas_orb['Low'].min()
             
-            # --- Búsqueda empieza a las 09:35 hasta antes de las 11:00 ---
-            horario_us = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time >= pd.to_datetime('09:35').time()) & (df_calc.index.time < pd.to_datetime('11:00').time())]
+            # --- MODIFICACIÓN: Búsqueda limitada a los primeros 60 min (hasta las 10:30 AM) ---
+            horario_us = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time >= pd.to_datetime('09:35').time()) & (df_calc.index.time < pd.to_datetime('10:30').time())]
             
             estado_ruptura = None
             pullback_hecho = False
-            vela_ruptura_extremo = 0 # Guardará el High/Low de la vela que rompió el rango
+            vela_ruptura_extremo = 0 
             
             for idx, row in horario_us.iterrows():
                 
@@ -120,10 +121,10 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     
                     if cierre > max_orb:
                         estado_ruptura = 'Long'
-                        vela_ruptura_extremo = row['Low'] # SL será el mínimo de esta vela de ruptura
+                        vela_ruptura_extremo = row['Low'] 
                     elif cierre < min_orb:
                         estado_ruptura = 'Short'
-                        vela_ruptura_extremo = row['High'] # SL será el máximo de esta vela de ruptura
+                        vela_ruptura_extremo = row['High'] 
                 
                 # FASE 2 y 3: PULLBACK Y CONFIRMACIÓN DE ENTRADA
                 else:
@@ -132,12 +133,10 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     stop_loss = 0
                     
                     if estado_ruptura == 'Long':
-                        # Fase 2: Esperar que el precio toque de nuevo el rango o entre
                         if not pullback_hecho:
                             if row['Low'] <= max_orb:
                                 pullback_hecho = True
                         
-                        # Fase 3: Una vez que ya hizo el pullback, esperar que vuelva a cerrar fuera (arriba)
                         if pullback_hecho:
                             if row['Close'] > max_orb:
                                 entrada = row['Close']
@@ -145,12 +144,10 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                                 stop_loss = vela_ruptura_extremo
                                 
                     elif estado_ruptura == 'Short':
-                        # Fase 2: Esperar que el precio toque de nuevo el rango o entre
                         if not pullback_hecho:
                             if row['High'] >= min_orb:
                                 pullback_hecho = True
                         
-                        # Fase 3: Una vez que ya hizo el pullback, esperar que vuelva a cerrar fuera (abajo)
                         if pullback_hecho:
                             if row['Close'] < min_orb:
                                 entrada = row['Close']
@@ -161,7 +158,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     if entrada is not None:
                         riesgo_precio = abs(entrada - stop_loss)
                         
-                        # Evitar división por cero en casos extraños del mercado
                         if riesgo_precio == 0: riesgo_precio = 0.01 
                         
                         take_profit = entrada + (riesgo_precio * ratio) if "Long" in tipo_trade else entrada - (riesgo_precio * ratio)
@@ -169,7 +165,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         resultado = "Sin Resolución ⏳"
                         riesgo_usd = capital_actual * (riesgo_pct / 100)
                         
-                        # Monitorear a partir de la VELA SIGUIENTE a la de entrada
                         df_post = df_calc.loc[idx + pd.Timedelta(minutes=1):]
                         
                         # CIERRE AUTOMÁTICO DE EMERGENCIA (11:00 NY)
@@ -180,7 +175,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                             
                             # Guillotina por tiempo a las 11:00
                             if jdx >= limite_tiempo:
-                                precio_cierre = vela['Open'] # Se asume cierre en la apertura de la vela de las 11:00
+                                precio_cierre = vela['Open'] 
                                 dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
                                 pnl_usd = (dist / riesgo_precio) * riesgo_usd
                                 resultado = "Ganancia (11:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (11:00) ⏱️❌"
@@ -206,7 +201,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                             'Max_ORB': max_orb, 'Min_ORB': min_orb,
                             'PnL ($)': pnl_usd, 'Balance': capital_actual
                         })
-                        break # Termina de buscar tras un trade
+                        break 
 
     return pd.DataFrame(operaciones)
 
@@ -221,9 +216,8 @@ df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos.")
 elif df_operaciones.empty:
-    st.info("No se encontraron operaciones en este rango de tiempo que cumplan con la ruptura, pullback y posterior confirmación de salida.")
+    st.info("No se encontraron operaciones en este rango de tiempo que cumplan con la ruptura, pullback y posterior confirmación de salida antes de las 10:30.")
 else:
-    # División de datos enfocada a los cierres a las 11:00
     df_regulares = df_operaciones[~df_operaciones['Resultado'].str.contains("11:00")]
     df_tiempo = df_operaciones[df_operaciones['Resultado'].str.contains("11:00")]
 
@@ -322,7 +316,6 @@ else:
         fecha_obj = trade_data['Apertura (NY)']
         dia_str = fecha_obj.strftime('%Y-%m-%d')
         
-        # Gráfico de velas de 1 minuto enfocado en la sesión crítica (09:00 a 11:30)
         df_dia = df_btc.loc[f"{dia_str} 09:00:00":f"{dia_str} 11:30:00"]
         
         fig = go.Figure(data=[go.Candlestick(
