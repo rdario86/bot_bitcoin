@@ -5,13 +5,17 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
-st.set_page_config(page_title="BOT Estrategia ORB (1m Confirmación) - Bitcoin", layout="wide")
+st.set_page_config(page_title="BOT Estrategia ORB (Stop Estructural) - Bitcoin", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA Y CAPITAL
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
     st.header("⚙️ Ajustes ORB (09:30 - 1m)")
+    st.markdown("""
+    **Estrategia Actualizada:**
+    - Stop Loss Dinámico: Se ubica en el mínimo/máximo estructural formado durante la fase de pullback, justo antes de la confirmación (segunda ruptura).
+    """)
     
     st.subheader("💰 Gestión de Capital")
     capital_inicial = st.number_input("Bank / Capital Inicial ($)", min_value=100.0, value=1000.0, step=100.0)
@@ -19,7 +23,6 @@ with st.sidebar.form(key='panel_ajustes'):
     
     st.divider()
     
-    # MODIFICACIÓN: Límite máximo de 30 días
     dias_historial = st.slider("Días de Backtesting", 1, 30, 15, help="Limitado a un máximo de 30 días.")
     
     opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 2.5: "1:2.50", 3.0: "1:3"}
@@ -82,14 +85,13 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (NUEVA LÓGICA DE CONFIRMACIÓN)
+# 3. MOTOR DE BACKTESTING (LÓGICA STOP ESTRUCTURAL)
 # ==========================================
 def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
     if df.empty: return pd.DataFrame(operaciones)
         
     df_calc = df.copy()
-        
     fechas = df_calc['Date'].unique()
     capital_actual = capital_inicial
     
@@ -106,12 +108,13 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             max_orb = velas_orb['High'].max()
             min_orb = velas_orb['Low'].min()
             
-            # --- MODIFICACIÓN: Búsqueda limitada a los primeros 60 min (hasta las 10:30 AM) ---
             horario_us = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time >= pd.to_datetime('09:35').time()) & (df_calc.index.time < pd.to_datetime('10:30').time())]
             
             estado_ruptura = None
             pullback_hecho = False
-            vela_ruptura_extremo = 0 
+            
+            # 🌟 NUEVA VARIABLE: Stop Loss Dinámico Estructural
+            sl_estructural = None 
             
             for idx, row in horario_us.iterrows():
                 
@@ -121,38 +124,44 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     
                     if cierre > max_orb:
                         estado_ruptura = 'Long'
-                        vela_ruptura_extremo = row['Low'] 
+                        sl_estructural = row['Low'] # Inicia en el mínimo de la vela que rompe
                     elif cierre < min_orb:
                         estado_ruptura = 'Short'
-                        vela_ruptura_extremo = row['High'] 
+                        sl_estructural = row['High'] # Inicia en el máximo de la vela que rompe
                 
-                # FASE 2 y 3: PULLBACK Y CONFIRMACIÓN DE ENTRADA
+                # FASE 2 y 3: PULLBACK, RASTREO DE MÍNIMO Y CONFIRMACIÓN
                 else:
                     entrada = None
                     tipo_trade = None
                     stop_loss = 0
                     
                     if estado_ruptura == 'Long':
+                        # 🌟 RASTREO: Durante toda la vida del pullback, actualizamos el Stop Loss si el precio hace un mínimo más bajo
+                        sl_estructural = min(sl_estructural, row['Low'])
+                        
                         if not pullback_hecho:
                             if row['Low'] <= max_orb:
                                 pullback_hecho = True
                         
                         if pullback_hecho:
-                            if row['Close'] > max_orb:
+                            if row['Close'] > max_orb: # Segunda ruptura (Confirmación)
                                 entrada = row['Close']
                                 tipo_trade = 'Long 🟢'
-                                stop_loss = vela_ruptura_extremo
+                                stop_loss = sl_estructural # Usamos el mínimo estructural rastreado
                                 
                     elif estado_ruptura == 'Short':
+                        # 🌟 RASTREO: Durante toda la vida del pullback, actualizamos el Stop Loss si el precio hace un máximo más alto
+                        sl_estructural = max(sl_estructural, row['High'])
+                        
                         if not pullback_hecho:
                             if row['High'] >= min_orb:
                                 pullback_hecho = True
                         
                         if pullback_hecho:
-                            if row['Close'] < min_orb:
+                            if row['Close'] < min_orb: # Segunda ruptura (Confirmación)
                                 entrada = row['Close']
                                 tipo_trade = 'Short 🔴'
-                                stop_loss = vela_ruptura_extremo
+                                stop_loss = sl_estructural # Usamos el máximo estructural rastreado
                             
                     # EJECUCIÓN DEL TRADE TRAS LA CONFIRMACIÓN
                     if entrada is not None:
@@ -160,7 +169,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         
                         if riesgo_precio == 0: riesgo_precio = 0.01 
                         
-                        # --- CÁLCULO DEL PORCENTAJE DEL STOP LOSS ---
                         porcentaje_sl = (riesgo_precio / entrada) * 100
                         
                         take_profit = entrada + (riesgo_precio * ratio) if "Long" in tipo_trade else entrada - (riesgo_precio * ratio)
@@ -170,13 +178,11 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         
                         df_post = df_calc.loc[idx + pd.Timedelta(minutes=1):]
                         
-                        # CIERRE AUTOMÁTICO DE EMERGENCIA (11:00 NY)
                         limite_tiempo = idx.replace(hour=11, minute=0, second=0)
                         fecha_cierre = None 
                         
                         for jdx, vela in df_post.iterrows():
                             
-                            # Guillotina por tiempo a las 11:00
                             if jdx >= limite_tiempo:
                                 precio_cierre = vela['Open'] 
                                 dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
@@ -185,7 +191,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                                 fecha_cierre = jdx 
                                 break
                                 
-                            # Cierre por alcanzar Stop Loss o Take Profit
                             if ("Long" in tipo_trade and vela['Low'] <= stop_loss) or ("Short" in tipo_trade and vela['High'] >= stop_loss):
                                 resultado, pnl_usd = "Pérdida ❌", -riesgo_usd
                                 fecha_cierre = jdx 
@@ -211,7 +216,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("📈 BOT Estrategia ORB (1m Confirmación)")
+st.title("📈 BOT Estrategia ORB (Stop Estructural)")
 
 df_btc = obtener_datos_bingx(dias_historial)
 df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct)
@@ -229,7 +234,7 @@ else:
     ganancia_neta = df_operaciones['PnL ($)'].sum()
     rentabilidad = (ganancia_neta / capital_inicial) * 100
 
-    st.subheader(f"📊 Resumen de Rendimiento - Breakout & Pullback Confirmado")
+    st.subheader(f"📊 Resumen de Rendimiento - Stop Dinámico Estructural")
     
     tab1, tab2, tab3 = st.tabs(["Totales (Suma)", "Cierres por SL/TP", "Cierres Forzados"])
 
@@ -339,7 +344,7 @@ else:
             marker=dict(symbol=simbolo_flecha, size=15, color=color_flecha)
         ))
         
-        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Mín/Máx de la Ruptura)")
+        fig.add_hline(y=trade_data['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Swing Estructural)")
         fig.add_hline(y=trade_data['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
         
         fig.update_layout(
