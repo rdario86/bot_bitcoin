@@ -5,18 +5,18 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
-st.set_page_config(page_title="BOT SMC Institucional (Mitigación Londres) - BTC", layout="wide")
+st.set_page_config(page_title="BOT SMC Institucional (Solo NY) - BTC", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ SMC: PDH/PDL + Londres")
+    st.header("⚙️ SMC: PDH/PDL (Solo NY)")
     st.markdown("""
-    **Lógica Institucional:**
+    **Lógica Institucional Estricta:**
     - **Liquidez:** PDH (Máximo de ayer) / PDL (Mínimo de ayer).
-    - **Escaneo FVG:** Inicia a las 00:00 (Captura manipulaciones de Londres).
-    - **Gatillo (Ejecución):** Solo se entra de 08:00 a 10:30 NY (Entrada al toque).
+    - **Killzone:** Sweep y FVG deben ocurrir *solo* entre 08:00 y 10:30 NY.
+    - **Gatillo:** FVG de 3 Velas (Entrada al toque).
     - **Cierre Forzado:** 12:00 NY.
     """)
     
@@ -31,7 +31,7 @@ with st.sidebar.form(key='panel_ajustes'):
     opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 2.5: "1:2.50", 3.0: "1:3", 4.0: "1:4"}
     ratio_rr = st.selectbox("Ratio Riesgo/Beneficio", options=list(opciones_ratio.keys()), format_func=lambda x: opciones_ratio[x], index=3)
     
-    ejecutar_btn = st.form_submit_button("Ejecutar Backtest Institucional")
+    ejecutar_btn = st.form_submit_button("Ejecutar Backtest NY")
 
 # ==========================================
 # 2. CONEXIÓN A BINGX (1m)
@@ -74,7 +74,7 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR SMC (MITIGACIÓN LONDRES + EJECUCIÓN NY)
+# 3. MOTOR SMC (EJECUCIÓN PURA NY)
 # ==========================================
 def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
@@ -84,7 +84,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     fechas = df_calc['Date'].unique()
     capital_actual = capital_inicial
     
-    # Comenzar desde el segundo día para tener datos del PDH/PDL de ayer
     for i in range(1, len(fechas)):
         fecha_actual = fechas[i]
         fecha_previa = fechas[i-1]
@@ -94,21 +93,24 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
         pdh = velas_previas['High'].max()
         pdl = velas_previas['Low'].min()
         
-        # 2. Rango de escaneo (Desde las 00:00, capturando Londres y NY)
-        # Solo escaneamos hasta las 10:30 para nuevas entradas
-        horario_dia = df_calc.loc[(df_calc['Date'] == fecha_actual) & (df_calc.index.time <= pd.to_datetime('10:30').time())]
+        # 2. Rango de escaneo (Estrictamente desde las 08:00 NY)
+        hora_inicio_ny = pd.to_datetime('08:00').time()
+        horario_ny = df_calc.loc[(df_calc['Date'] == fecha_actual) & (df_calc.index.time >= hora_inicio_ny)]
         
         estado = "Buscando Sweep"
         tipo_trade, entrada, stop_loss = None, None, None
         entrada_limit, tp_teorico = None, None
         fvg_top, fvg_bottom = None, None
         vela_1_time = None
-        origen_setup = "Nueva York"
         
-        for k in range(len(horario_dia)):
-            idx = horario_dia.index[k]
-            row = horario_dia.iloc[k]
+        for k in range(len(horario_ny)):
+            idx = horario_ny.index[k]
+            row = horario_ny.iloc[k]
             
+            # Solo buscamos nuevos setups hasta las 10:30
+            if idx.time() > pd.to_datetime('10:30').time() and entrada is None:
+                break 
+                
             # FASE 1: Buscar Toma de Liquidez en PDH o PDL
             if estado == "Buscando Sweep":
                 if row['High'] > pdh:
@@ -116,10 +118,10 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 elif row['Low'] < pdl:
                     estado = "Sweep Minimo"
             
-            # FASE 2: Patrón 3-Velas FVG
+            # FASE 2: Patrón 3-Velas FVG post-Sweep
             elif estado == "Sweep Maximo":
                 if k >= 2:
-                    c1, c2, c3 = horario_dia.iloc[k-2], horario_dia.iloc[k-1], row
+                    c1, c2, c3 = horario_ny.iloc[k-2], horario_ny.iloc[k-1], row
                     
                     if c1['Low'] > c3['High'] and c1['Close'] > c3['Close']:
                         entrada_limit = c3['High'] 
@@ -128,13 +130,12 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         if entrada_limit < stop_loss: 
                             tp_teorico = entrada_limit - (abs(entrada_limit - stop_loss) * ratio)
                             fvg_top, fvg_bottom = c1['Low'], c3['High']
-                            vela_1_time = horario_dia.index[k-2]
+                            vela_1_time = horario_ny.index[k-2]
                             estado = "Esperando Retroceso Short"
-                            origen_setup = "Londres" if idx.time() < pd.to_datetime('08:00').time() else "Nueva York"
                             
             elif estado == "Sweep Minimo":
                 if k >= 2:
-                    c1, c2, c3 = horario_dia.iloc[k-2], horario_dia.iloc[k-1], row
+                    c1, c2, c3 = horario_ny.iloc[k-2], horario_ny.iloc[k-1], row
                     
                     if c1['High'] < c3['Low'] and c1['Close'] < c3['Close']:
                         entrada_limit = c3['Low']  
@@ -143,30 +144,23 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         if entrada_limit > stop_loss: 
                             tp_teorico = entrada_limit + (abs(entrada_limit - stop_loss) * ratio)
                             fvg_top, fvg_bottom = c3['Low'], c1['High']
-                            vela_1_time = horario_dia.index[k-2]
+                            vela_1_time = horario_ny.index[k-2]
                             estado = "Esperando Retroceso Long"
-                            origen_setup = "Londres" if idx.time() < pd.to_datetime('08:00').time() else "Nueva York"
 
-            # FASE 3: Gestión de la Orden Limit (Mitigación)
+            # FASE 3: Gestión de la Orden Limit al Toque
             elif estado == "Esperando Retroceso Short":
                 if row['High'] >= stop_loss or row['Low'] <= tp_teorico:
-                    estado = "Buscando Sweep" # Invalida setup
+                    estado = "Buscando Sweep" # Invalida setup si rompe el SL o se va al TP sin nosotros
                 elif row['High'] >= entrada_limit:
-                    if idx.time() >= pd.to_datetime('08:00').time():
-                        entrada, tipo_trade = entrada_limit, 'Short 🔴'
-                        break # NY Abrió, Disparo Autorizado
-                    else:
-                        estado = "Buscando Sweep" # Londres mitigó su propio FVG. Invalida para NY.
+                    entrada, tipo_trade = entrada_limit, 'Short 🔴'
+                    break 
                         
             elif estado == "Esperando Retroceso Long":
                 if row['Low'] <= stop_loss or row['High'] >= tp_teorico:
                     estado = "Buscando Sweep" # Invalida setup
                 elif row['Low'] <= entrada_limit:
-                    if idx.time() >= pd.to_datetime('08:00').time():
-                        entrada, tipo_trade = entrada_limit, 'Long 🟢'
-                        break # NY Abrió, Disparo Autorizado
-                    else:
-                        estado = "Buscando Sweep" # Londres mitigó su propio FVG. Invalida para NY.
+                    entrada, tipo_trade = entrada_limit, 'Long 🟢'
+                    break 
 
         # FASE 4: Ejecución del Trade en vivo (Gestión hasta las 12:00)
         if entrada is not None:
@@ -176,10 +170,8 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             riesgo_usd = capital_actual * (riesgo_pct / 100)
             resultado, fecha_cierre = "Sin Resolución", None
             
-            # Extraer las velas desde la entrada hasta el cierre
-            horario_completo = df_calc.loc[df_calc['Date'] == fecha_actual]
-            idx_entrada = horario_completo.index.get_loc(idx)
-            df_post = horario_completo.iloc[idx_entrada:]
+            idx_entrada = horario_ny.index.get_loc(idx)
+            df_post = horario_ny.iloc[idx_entrada:]
             limite_cierre = idx.replace(hour=12, minute=0, second=0)
             
             for jdx, vela in df_post.iterrows():
@@ -205,8 +197,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             if fecha_cierre is not None:
                 capital_actual += pnl_usd
                 operaciones.append({
-                    'Entrada (NY)': idx, 'Cierre (NY)': fecha_cierre, 'Tipo': tipo_trade,
-                    'Origen': origen_setup,
+                    'Apertura (NY)': idx, 'Cierre (NY)': fecha_cierre, 'Tipo': tipo_trade,
                     'Entrada': entrada, 'Stop Loss': stop_loss, 'Take Profit': take_profit,
                     'Resultado': resultado, 'PnL ($)': pnl_usd, 'Balance': capital_actual,
                     'FVG_Top': fvg_top, 'FVG_Bottom': fvg_bottom, 'Vela1_Time': vela_1_time, 
@@ -218,7 +209,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("🎯 BOT SMC: PDH/PDL + Mitigación de Londres")
+st.title("🎯 BOT SMC: PDH/PDL Sweep (Solo NY)")
 
 df_btc = obtener_datos_bingx(dias_historial)
 df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct)
@@ -226,9 +217,9 @@ df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos de BingX.")
 elif df_operaciones.empty:
-    st.info("Ningún trade cumplió con los parámetros institucionales estrictos en este periodo.")
+    st.info("Ningún trade cumplió con los parámetros estrcitos en la sesión de NY para este periodo.")
 else:
-    st.subheader("📊 Resumen de Rendimiento SMC (PDH/PDL)")
+    st.subheader("📊 Resumen de Rendimiento SMC (PDH/PDL NY)")
     
     total_trades = len(df_operaciones)
     aciertos = len(df_operaciones[df_operaciones['Resultado'].str.contains("Ganancia")])
@@ -251,18 +242,16 @@ else:
 
     st.divider()
     
-    st.subheader("🔍 Visualizador de Entradas Institucionales")
-    # Mostrar el origen en el dropdown (Londres o NY)
-    opciones_trades = [f"{row['Entrada (NY)'].strftime('%Y-%m-%d %H:%M')} (Setup de {row['Origen']})" for _, row in df_operaciones.iterrows()]
-    trade_seleccionado_str = st.selectbox("Selecciona un trade para visualizar el análisis completo:", opciones_trades)
+    st.subheader("🔍 Visualizador de Entradas Institucionales (NY)")
+    opciones_trades = [row['Apertura (NY)'].strftime('%Y-%m-%d %H:%M') for _, row in df_operaciones.iterrows()]
+    trade_seleccionado = st.selectbox("Selecciona un trade para visualizar el Sweep en NY:", opciones_trades)
     
-    if trade_seleccionado_str:
-        trade_date_str = trade_seleccionado_str.split(" ")[0] + " " + trade_seleccionado_str.split(" ")[1]
-        trade = df_operaciones[df_operaciones['Entrada (NY)'].dt.strftime('%Y-%m-%d %H:%M') == trade_date_str].iloc[0]
-        dia_str = trade['Entrada (NY)'].strftime('%Y-%m-%d')
+    if trade_seleccionado:
+        trade = df_operaciones[df_operaciones['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M') == trade_seleccionado].iloc[0]
+        dia_str = trade['Apertura (NY)'].strftime('%Y-%m-%d')
         
-        # Mostramos la gráfica desde las 00:00 (Para poder ver si el barrido pasó en Londres en la madrugada)
-        df_dia = df_btc.loc[f"{dia_str} 00:00:00":f"{dia_str} 12:30:00"]
+        # Gráfica centrada en la acción del precio en Nueva York (07:00 para algo de contexto)
+        df_dia = df_btc.loc[f"{dia_str} 07:00:00":f"{dia_str} 12:30:00"]
         
         fig = go.Figure(data=[go.Candlestick(
             x=df_dia.index, open=df_dia['Open'], high=df_dia['High'], low=df_dia['Low'], close=df_dia['Close'], name='BTC/USDT'
@@ -272,22 +261,16 @@ else:
         fig.add_hline(y=trade['PDH'], line_dash="dash", line_color="magenta", annotation_text="PDH (Liquidez Superior)", line_width=2)
         fig.add_hline(y=trade['PDL'], line_dash="dash", line_color="magenta", annotation_text="PDL (Liquidez Inferior)", line_width=2)
         
-        # Sombreado de la sesión "Restringida" (Londres, donde no se entra a mercado, solo se mapea)
-        fig.add_vrect(
-            x0=f"{dia_str} 00:00:00", x1=f"{dia_str} 08:00:00",
-            fillcolor="white", opacity=0.05, line_width=0, annotation_text="Sesión Londres/Asia (Mapeo)", annotation_position="top left"
-        )
-        
         # Resaltar el FVG
         color_caja = "rgba(0, 255, 0, 0.15)" if "Long" in trade['Tipo'] else "rgba(255, 0, 0, 0.15)"
         fig.add_hrect(
             y0=trade['FVG_Bottom'], y1=trade['FVG_Top'], line_width=1, line_color="yellow", fillcolor=color_caja,
-            annotation_text="FVG", annotation_position="bottom right"
+            annotation_text="FVG Limit", annotation_position="top left"
         )
         
         # Origen Vela 1 (Stop Loss)
         fig.add_trace(go.Scatter(
-            x=[trade['Vela1_Time']], y=[trade['Stop Loss']], mode='markers', name='Origen de Manipulación',
+            x=[trade['Vela1_Time']], y=[trade['Stop Loss']], mode='markers', name='Origen Vela 1',
             marker=dict(symbol="x", size=10, color="white", line=dict(width=2, color='red'))
         ))
         
@@ -296,7 +279,7 @@ else:
         simbolo = "triangle-up" if "Long" in trade['Tipo'] else "triangle-down"
         
         fig.add_trace(go.Scatter(
-            x=[trade['Entrada (NY)']], y=[trade['Entrada']], mode='markers', name='Ejecución Limit NY',
+            x=[trade['Apertura (NY)']], y=[trade['Entrada']], mode='markers', name='Toque Limit',
             marker=dict(symbol=simbolo, size=15, color=color, line=dict(width=2, color='white'))
         ))
         
@@ -304,7 +287,7 @@ else:
         fig.add_hline(y=trade['Take Profit'], line_dash="solid", line_color="green", annotation_text="TP")
         
         fig.update_layout(
-            title=f"Trade {trade['Tipo']} | Setup originado en: {trade['Origen']} | Res: {trade['Resultado']}",
+            title=f"Trade {trade['Tipo']} | Sweep PDH/PDL en NY | Res: {trade['Resultado']}",
             yaxis_title="Precio Bitcoin (USD)", height=650, xaxis_rangeslider_visible=False, template="plotly_dark",
             margin=dict(l=50, r=50, t=80, b=50)
         )
