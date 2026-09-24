@@ -128,10 +128,10 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 if estado == "Buscando Setup":
                     if k >= 2:
                         c1, c2, c3 = horario_ny.iloc[k-2], horario_ny.iloc[k-1], row
-                        if c1['High'] < c3['Low'] and c1['Close'] < c3['Close']: # FVG Long
+                        if c1['High'] < c3['Low'] and c1['Close'] < c3['Close']: 
                             entrada_limit = c3['Low']  
                             stop_loss = c1['Low']      
-                            tp_teorico = pdh # El TP es literalmente el nivel del PDH
+                            tp_teorico = pdh 
                             
                             if entrada_limit > stop_loss and tp_teorico > entrada_limit: 
                                 fvg_top, fvg_bottom = c3['Low'], c1['High']
@@ -142,10 +142,10 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 if estado == "Buscando Setup":
                     if k >= 2:
                         c1, c2, c3 = horario_ny.iloc[k-2], horario_ny.iloc[k-1], row
-                        if c1['Low'] > c3['High'] and c1['Close'] > c3['Close']: # FVG Short
+                        if c1['Low'] > c3['High'] and c1['Close'] > c3['Close']: 
                             entrada_limit = c3['High'] 
                             stop_loss = c1['High']     
-                            tp_teorico = pdl # El TP es literalmente el nivel del PDL
+                            tp_teorico = pdl 
                             
                             if entrada_limit < stop_loss and tp_teorico < entrada_limit: 
                                 fvg_top, fvg_bottom = c1['Low'], c3['High']
@@ -183,7 +183,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                                 estado = "Esperando Retroceso Long"
 
             # ----------------------------------------------------
-            # FASE DE ACTIVACIÓN DE ÓRDENES LIMIT (Para ambos modos)
+            # FASE DE ACTIVACIÓN DE ÓRDENES LIMIT
             # ----------------------------------------------------
             if "Esperando Retroceso Short" in estado:
                 if row['High'] >= stop_loss or row['Low'] <= tp_teorico:
@@ -202,7 +202,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     break 
 
         # ----------------------------------------------------
-        # GESTIÓN DEL TRADE HASTA LAS 12:00
+        # GESTIÓN DEL TRADE
         # ----------------------------------------------------
         if entrada is not None:
             riesgo_precio = abs(entrada - stop_loss)
@@ -210,7 +210,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             take_profit = tp_teorico
             riesgo_usd = capital_actual * (riesgo_pct / 100)
             
-            # Ajuste de Ratio Real para los trades de Draw on Liquidity
             ratio_real = abs(entrada - take_profit) / riesgo_precio
             
             resultado, fecha_cierre = "Sin Resolución", None
@@ -238,8 +237,9 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             
             if fecha_cierre is not None:
                 capital_actual += pnl_usd
+                dia_string = fecha_actual.strftime('%Y-%m-%d') # <--- CORRECCIÓN DEL ERROR AQUÍ
                 operaciones.append({
-                    'Día': dia_str := fecha_actual.strftime('%Y-%m-%d'),
+                    'Día': dia_string,
                     'Narrativa': narrativa,
                     'Apertura (NY)': idx, 'Cierre (NY)': fecha_cierre, 'Tipo': tipo_trade,
                     'Entrada': entrada, 'Stop Loss': stop_loss, 'Take Profit': take_profit,
@@ -288,47 +288,39 @@ else:
     st.divider()
     
     st.subheader("🔍 Visualizador (Contexto Institucional de 24h)")
-    # Muestra el trade con su narrativa para que sepas por qué tomó la decisión
     opciones_trades = [f"{row['Apertura (NY)'].strftime('%Y-%m-%d %H:%M')} | Narrativa: {row['Narrativa']} | {row['Tipo']}" for _, row in df_operaciones.iterrows()]
     trade_seleccionado = st.selectbox("Selecciona un trade para ver cómo funcionó el imán de liquidez:", opciones_trades)
     
     if trade_seleccionado:
-        # Extraer la fecha del string seleccionado
         fecha_str = trade_seleccionado.split(" | ")[0]
         trade = df_operaciones[df_operaciones['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M') == fecha_str].iloc[0]
         dia_str = trade['Día']
         
-        # Mostramos la gráfica desde las 00:00 (Londres) hasta el cierre, para ver la historia completa del día
         df_dia = df_btc.loc[f"{dia_str} 00:00:00":f"{dia_str} 12:30:00"]
         
         fig = go.Figure(data=[go.Candlestick(
             x=df_dia.index, open=df_dia['Open'], high=df_dia['High'], low=df_dia['Low'], close=df_dia['Close'], name='BTC/USDT'
         )])
         
-        # Sombreado de la sesión de Londres (Para ver dónde se formó la narrativa)
         fig.add_vrect(
             x0=f"{dia_str} 00:00:00", x1=f"{dia_str} 08:00:00",
             fillcolor="white", opacity=0.03, line_width=0, annotation_text="Londres (Forma Narrativa)", annotation_position="top left"
         )
         
-        # Líneas Magnéticas de Liquidez (PDH y PDL)
         fig.add_hline(y=trade['PDH'], line_dash="solid", line_color="magenta", annotation_text="PDH (Liquidez Superior)", line_width=2)
         fig.add_hline(y=trade['PDL'], line_dash="solid", line_color="magenta", annotation_text="PDL (Liquidez Inferior)", line_width=2)
         
-        # Resaltar el FVG de Entrada
         color_caja = "rgba(0, 255, 0, 0.15)" if "Long" in trade['Tipo'] else "rgba(255, 0, 0, 0.15)"
         fig.add_hrect(
             y0=trade['FVG_Bottom'], y1=trade['FVG_Top'], line_width=1, line_color="yellow", fillcolor=color_caja,
             annotation_text="FVG Limit", annotation_position="top left"
         )
         
-        # Origen Vela 1 (Stop Loss)
         fig.add_trace(go.Scatter(
             x=[trade['Vela1_Time']], y=[trade['Stop Loss']], mode='markers', name='Vela 1 (SL)',
             marker=dict(symbol="x", size=10, color="white", line=dict(width=2, color='red'))
         ))
         
-        # Punto de Entrada
         color = "#00FF00" if "Long" in trade['Tipo'] else "#FF0000"
         simbolo = "triangle-up" if "Long" in trade['Tipo'] else "triangle-down"
         
@@ -337,7 +329,6 @@ else:
             marker=dict(symbol=simbolo, size=15, color=color, line=dict(width=2, color='white'))
         ))
         
-        # Mostrar el Take profit en el visualizador
         fig.add_hline(y=trade['Take Profit'], line_dash="solid", line_color="green", annotation_text=f"Take Profit (RR Real 1:{trade['RR Real']})")
         
         fig.update_layout(
