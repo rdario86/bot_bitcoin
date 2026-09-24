@@ -2,21 +2,21 @@ import streamlit as st
 import pandas as pd
 import ccxt
 import plotly.graph_objects as go
-from datetime import timedelta
 import time
 
-st.set_page_config(page_title="BOT SMC PRO: Doble Barrido - BTC", layout="wide")
+st.set_page_config(page_title="BOT SMC PRO: London Liquidity & EQH/EQL - BTC", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ SMC: Doble Barrido")
+    st.header("⚙️ SMC: London & EQH/EQL")
     st.markdown("""
-    **Lógica de Liquidez:**
-    - Si Londres tomó el PDL ➡️ NY espera barrer el **PDH** (Para entrar Short).
-    - Si Londres tomó el PDH ➡️ NY espera barrer el **PDL** (Para entrar Long).
-    - Si Londres fue neutral ➡️ NY espera que se barra cualquiera de los dos.
+    **Lógica Intradía (Day Trading):**
+    - **Liquidez:** Máximo y Mínimo de Londres (00:00 a 08:00 NY).
+    - **Detector:** Identifica si formaron **EQH** o **EQL**.
+    - **Ejecución:** Sweep en NY + FVG Limit (08:00 a 10:30).
+    - **Target:** El extremo opuesto de Londres.
     """)
     
     st.subheader("💰 Gestión de Capital")
@@ -27,10 +27,7 @@ with st.sidebar.form(key='panel_ajustes'):
     
     dias_historial = st.slider("Días de Backtesting", 2, 30, 20)
     
-    opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 2.5: "1:2.50", 3.0: "1:3", 4.0: "1:4"}
-    ratio_rr = st.selectbox("Ratio Riesgo/Beneficio", options=list(opciones_ratio.keys()), format_func=lambda x: opciones_ratio[x], index=3)
-    
-    ejecutar_btn = st.form_submit_button("Ejecutar Algoritmo")
+    ejecutar_btn = st.form_submit_button("Ejecutar Algoritmo London SMC")
 
 # ==========================================
 # 2. CONEXIÓN A BINGX (1m)
@@ -73,9 +70,9 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR SMC (FILTRO POR NARRATIVA)
+# 3. MOTOR SMC (LONDRES + EQH/EQL + FVG LIMIT)
 # ==========================================
-def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
+def ejecutar_backtest(df, capital_inicial, riesgo_pct):
     operaciones = []
     if df.empty: return pd.DataFrame(operaciones)
         
@@ -83,27 +80,36 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     fechas = df_calc['Date'].unique()
     capital_actual = capital_inicial
     
-    for i in range(1, len(fechas)):
-        fecha_actual = fechas[i]
-        fecha_previa = fechas[i-1]
+    for fecha_actual in fechas:
         
-        # 1. Definir Liquidez Mayor (PDH y PDL de ayer)
-        velas_previas = df_calc[df_calc['Date'] == fecha_previa]
-        pdh = velas_previas['High'].max()
-        pdl = velas_previas['Low'].min()
+        # 1. Analizar la Sesión de Londres / Asia (00:00 a 08:00 NY)
+        londres = df_calc.loc[(df_calc['Date'] == fecha_actual) & (df_calc.index.time >= pd.to_datetime('00:00').time()) & (df_calc.index.time < pd.to_datetime('08:00').time())]
         
-        # 2. Evaluar qué hizo Londres (00:00 a 08:00)
-        londres = df_calc.loc[(df_calc['Date'] == fecha_actual) & (df_calc.index.time < pd.to_datetime('08:00').time())]
-        londres_max = londres['High'].max() if not londres.empty else 0
-        londres_min = londres['Low'].min() if not londres.empty else 9999999
+        if len(londres) < 60: continue # Evitar días incompletos
+            
+        lon_high = londres['High'].max()
+        lon_low = londres['Low'].min()
         
-        narrativa = "Neutral"
-        if londres_min < pdl and londres_max > pdh:
-            narrativa = "Neutral" # Si por algún milagro tomó ambos, reseteamos a neutral
-        elif londres_min < pdl:
-            narrativa = "Esperar PDH" # Ya sacó a los compradores, ahora vamos por los vendedores
-        elif londres_max > pdh:
-            narrativa = "Esperar PDL" # Ya sacó a los vendedores, ahora vamos por los compradores
+        # 2. DETECTOR DE EQH Y EQL (Margen de 0.05% de variación)
+        umbral_high = lon_high * 0.0005
+        umbral_low = lon_low * 0.0005
+        
+        picos_altos = londres[londres['High'] >= lon_high - umbral_high]
+        picos_bajos = londres[londres['Low'] <= lon_low + umbral_low]
+        
+        # Si hay más de un pico en la misma zona separados por al menos 15 minutos, es un EQH/EQL
+        is_eqh = False
+        if len(picos_altos) > 1:
+            if (picos_altos.index[-1] - picos_altos.index[0]) >= pd.Timedelta(minutes=15):
+                is_eqh = True
+                
+        is_eql = False
+        if len(picos_bajos) > 1:
+            if (picos_bajos.index[-1] - picos_bajos.index[0]) >= pd.Timedelta(minutes=15):
+                is_eql = True
+                
+        poi_high_name = "EQH (Doble Techo)" if is_eqh else "London High"
+        poi_low_name = "EQL (Doble Suelo)" if is_eql else "London Low"
             
         # 3. Búsqueda de Entradas NY (08:00 a 10:30)
         hora_inicio_ny = pd.to_datetime('08:00').time()
@@ -121,32 +127,24 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             if idx.time() > pd.to_datetime('10:30').time() and entrada is None:
                 break 
                 
-            # FASE 1: Buscar Toma de Liquidez filtrada por la Narrativa
+            # FASE 1: Buscar Sweep de los niveles de Londres
             if estado == "Buscando Sweep":
-                if narrativa == "Esperar PDH":
-                    # El bot ignora el PDL, solo espera que el precio suba y barra el PDH
-                    if row['High'] > pdh: estado = "Sweep Maximo"
-                
-                elif narrativa == "Esperar PDL":
-                    # El bot ignora el PDH, solo espera que el precio baje y barra el PDL
-                    if row['Low'] < pdl: estado = "Sweep Minimo"
-                
-                elif narrativa == "Neutral":
-                    # Como no pasó nada en Londres, esperamos que rompa cualquiera de los dos
-                    if row['High'] > pdh: estado = "Sweep Maximo"
-                    elif row['Low'] < pdl: estado = "Sweep Minimo"
+                if row['High'] > lon_high: 
+                    estado = "Sweep Maximo"
+                elif row['Low'] < lon_low: 
+                    estado = "Sweep Minimo"
             
-            # FASE 2: Patrón FVG de 3 velas tras barrer la liquidez correcta
+            # FASE 2: Patrón 3-Velas FVG
             elif estado == "Sweep Maximo":
                 if k >= 2:
                     c1, c2, c3 = horario_ny.iloc[k-2], horario_ny.iloc[k-1], row
                     
-                    if c1['Low'] > c3['High'] and c1['Close'] > c3['Close']:
+                    if c1['Low'] > c3['High'] and c1['Close'] > c3['Close']: # FVG Venta
                         entrada_limit = c3['High'] 
                         stop_loss = c1['High']     
+                        tp_teorico = lon_low # Target: El Mínimo/EQL opuesto
                         
-                        if entrada_limit < stop_loss: 
-                            tp_teorico = entrada_limit - (abs(entrada_limit - stop_loss) * ratio)
+                        if entrada_limit < stop_loss and tp_teorico < entrada_limit: 
                             fvg_top, fvg_bottom = c1['Low'], c3['High']
                             vela_1_time = horario_ny.index[k-2]
                             estado = "Esperando Retroceso Short"
@@ -155,29 +153,31 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 if k >= 2:
                     c1, c2, c3 = horario_ny.iloc[k-2], horario_ny.iloc[k-1], row
                     
-                    if c1['High'] < c3['Low'] and c1['Close'] < c3['Close']:
+                    if c1['High'] < c3['Low'] and c1['Close'] < c3['Close']: # FVG Compra
                         entrada_limit = c3['Low']  
                         stop_loss = c1['Low']      
+                        tp_teorico = lon_high # Target: El Máximo/EQH opuesto
                         
-                        if entrada_limit > stop_loss: 
-                            tp_teorico = entrada_limit + (abs(entrada_limit - stop_loss) * ratio)
+                        if entrada_limit > stop_loss and tp_teorico > entrada_limit: 
                             fvg_top, fvg_bottom = c3['Low'], c1['High']
                             vela_1_time = horario_ny.index[k-2]
                             estado = "Esperando Retroceso Long"
 
             # FASE 3: Activar la Orden Limit al Toque
-            elif estado == "Esperando Retroceso Short":
+            if estado == "Esperando Retroceso Short":
                 if row['High'] >= stop_loss or row['Low'] <= tp_teorico:
                     estado = "Buscando Sweep" 
                 elif row['High'] >= entrada_limit:
-                    entrada, tipo_trade = entrada_limit, 'Short 🔴'
+                    entrada = entrada_limit
+                    tipo_trade = 'Short 🔴'
                     break 
                     
             elif estado == "Esperando Retroceso Long":
                 if row['Low'] <= stop_loss or row['High'] >= tp_teorico:
                     estado = "Buscando Sweep" 
                 elif row['Low'] <= entrada_limit:
-                    entrada, tipo_trade = entrada_limit, 'Long 🟢'
+                    entrada = entrada_limit
+                    tipo_trade = 'Long 🟢'
                     break 
 
         # FASE 4: Gestión del Trade (hasta las 12:00)
@@ -187,13 +187,15 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             take_profit = tp_teorico
             riesgo_usd = capital_actual * (riesgo_pct / 100)
             
+            # Calculamos el Ratio que se logró atrapar (Draw on Liquidity puro)
+            ratio_real = abs(entrada - take_profit) / riesgo_precio
+            
             resultado, fecha_cierre = "Sin Resolución", None
             idx_entrada = horario_ny.index.get_loc(idx)
             df_post = horario_ny.iloc[idx_entrada:]
             limite_cierre = idx.replace(hour=12, minute=0, second=0)
             
             for jdx, vela in df_post.iterrows():
-                # Cierre Forzado 12:00 NY
                 if jdx >= limite_cierre:
                     precio_cierre = vela['Open']
                     dist = (entrada - precio_cierre) if "Short" in tipo_trade else (precio_cierre - entrada)
@@ -202,27 +204,32 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     fecha_cierre = jdx
                     break
                 
-                # Cierre SL/TP Intrabarra
                 if ("Long" in tipo_trade and vela['Low'] <= stop_loss) or ("Short" in tipo_trade and vela['High'] >= stop_loss):
                     resultado, pnl_usd = "Pérdida (SL) ❌", -riesgo_usd
                     fecha_cierre = jdx
                     break
                 elif ("Long" in tipo_trade and vela['High'] >= take_profit) or ("Short" in tipo_trade and vela['Low'] <= take_profit):
-                    resultado, pnl_usd = "Ganancia (TP) ✅", riesgo_usd * ratio
+                    resultado, pnl_usd = "Ganancia (TP) ✅", riesgo_usd * ratio_real
                     fecha_cierre = jdx
                     break
             
             if fecha_cierre is not None:
                 capital_actual += pnl_usd
                 dia_string = fecha_actual.strftime('%Y-%m-%d')
+                
+                # Identificar qué nivel se barrió
+                target_sweep = poi_high_name if "Short" in tipo_trade else poi_low_name
+                
                 operaciones.append({
                     'Día': dia_string,
-                    'Regla NY': narrativa,
+                    'Liquidez Barrida': target_sweep,
                     'Apertura (NY)': idx, 'Cierre (NY)': fecha_cierre, 'Tipo': tipo_trade,
                     'Entrada': entrada, 'Stop Loss': stop_loss, 'Take Profit': take_profit,
+                    'RR Real': round(ratio_real, 2),
                     'Resultado': resultado, 'PnL ($)': pnl_usd, 'Balance': capital_actual,
                     'FVG_Top': fvg_top, 'FVG_Bottom': fvg_bottom, 'Vela1_Time': vela_1_time, 
-                    'PDH': pdh, 'PDL': pdl
+                    'Lon_High': lon_high, 'Lon_Low': lon_low,
+                    'POI_High_Name': poi_high_name, 'POI_Low_Name': poi_low_name
                 })
 
     return pd.DataFrame(operaciones)
@@ -230,17 +237,17 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("🎯 BOT SMC PRO: Doble Barrido Inteligente")
+st.title("🧠 BOT SMC PRO: London Liquidity + EQH/EQL")
 
 df_btc = obtener_datos_bingx(dias_historial)
-df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct)
+df_operaciones = ejecutar_backtest(df_btc, capital_inicial, riesgo_pct)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos de BingX.")
 elif df_operaciones.empty:
-    st.info("Ningún trade cumplió con los parámetros institucionales estrictos para este periodo.")
+    st.info("Ningún trade cumplió con los parámetros institucionales de barrido en Londres para este periodo.")
 else:
-    st.subheader("📊 Resumen de Rendimiento SMC Inteligente")
+    st.subheader("📊 Resumen de Rendimiento SMC (Intradía Puro)")
     
     total_trades = len(df_operaciones)
     aciertos = len(df_operaciones[df_operaciones['Resultado'].str.contains("Ganancia")])
@@ -263,34 +270,38 @@ else:
 
     st.divider()
     
-    st.subheader("🔍 Visualizador (Contexto de Liquidez 24h)")
-    # Muestra la instrucción que seguía el bot para ese día específico
-    opciones_trades = [f"{row['Apertura (NY)'].strftime('%Y-%m-%d %H:%M')} | Misión: {row['Regla NY']} | {row['Tipo']}" for _, row in df_operaciones.iterrows()]
-    trade_seleccionado = st.selectbox("Selecciona un trade para ver el comportamiento del doble barrido:", opciones_trades)
+    st.subheader("🔍 Visualizador (Acción del Precio y Trampas de Liquidez)")
+    
+    # Menú desplegable detallado con la información del EQH/EQL
+    opciones_trades = [f"{row['Apertura (NY)'].strftime('%Y-%m-%d %H:%M')} | Barrió: {row['Liquidez Barrida']} | {row['Tipo']}" for _, row in df_operaciones.iterrows()]
+    trade_seleccionado = st.selectbox("Selecciona un trade para visualizar el barrido de Londres:", opciones_trades)
     
     if trade_seleccionado:
         fecha_str = trade_seleccionado.split(" | ")[0]
         trade = df_operaciones[df_operaciones['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M') == fecha_str].iloc[0]
         dia_str = trade['Día']
         
-        # Mostramos la gráfica desde las 00:00 para ver la acción de Londres
+        # Mostrar desde las 00:00 para ver claramente la formación de los EQH/EQL de Londres
         df_dia = df_btc.loc[f"{dia_str} 00:00:00":f"{dia_str} 12:30:00"]
         
         fig = go.Figure(data=[go.Candlestick(
             x=df_dia.index, open=df_dia['Open'], high=df_dia['High'], low=df_dia['Low'], close=df_dia['Close'], name='BTC/USDT'
         )])
         
-        # Sombreado de la sesión de Londres (Para ver el primer barrido)
+        # Zona gris: Sesión de Londres
         fig.add_vrect(
             x0=f"{dia_str} 00:00:00", x1=f"{dia_str} 08:00:00",
-            fillcolor="white", opacity=0.03, line_width=0, annotation_text="Londres (Primer Barrido)", annotation_position="top left"
+            fillcolor="white", opacity=0.03, line_width=0, annotation_text="Sesión Londres (Creación de Liquidez)", annotation_position="top left"
         )
         
-        # Líneas de Liquidez Mayor
-        fig.add_hline(y=trade['PDH'], line_dash="solid", line_color="magenta", annotation_text="PDH (Liquidez Superior)", line_width=2)
-        fig.add_hline(y=trade['PDL'], line_dash="solid", line_color="magenta", annotation_text="PDL (Liquidez Inferior)", line_width=2)
+        # Líneas Magnéticas (Con color y texto dinámico si es EQH/EQL)
+        color_high = "red" if "EQH" in trade['POI_High_Name'] else "orange"
+        color_low = "red" if "EQL" in trade['POI_Low_Name'] else "orange"
         
-        # Resaltar el FVG de Entrada
+        fig.add_hline(y=trade['Lon_High'], line_dash="solid", line_color=color_high, annotation_text=trade['POI_High_Name'], line_width=2)
+        fig.add_hline(y=trade['Lon_Low'], line_dash="solid", line_color=color_low, annotation_text=trade['POI_Low_Name'], line_width=2)
+        
+        # Resaltar el FVG
         color_caja = "rgba(0, 255, 0, 0.15)" if "Long" in trade['Tipo'] else "rgba(255, 0, 0, 0.15)"
         fig.add_hrect(
             y0=trade['FVG_Bottom'], y1=trade['FVG_Top'], line_width=1, line_color="yellow", fillcolor=color_caja,
@@ -303,7 +314,7 @@ else:
             marker=dict(symbol="x", size=10, color="white", line=dict(width=2, color='red'))
         ))
         
-        # Punto de Entrada Exacta
+        # Punto de Entrada
         color = "#00FF00" if "Long" in trade['Tipo'] else "#FF0000"
         simbolo = "triangle-up" if "Long" in trade['Tipo'] else "triangle-down"
         
@@ -312,10 +323,11 @@ else:
             marker=dict(symbol=simbolo, size=15, color=color, line=dict(width=2, color='white'))
         ))
         
-        fig.add_hline(y=trade['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
+        # Take Profit Dinámico (El otro extremo de Londres)
+        fig.add_hline(y=trade['Take Profit'], line_dash="solid", line_color="green", annotation_text=f"Take Profit (RR 1:{trade['RR Real']})")
         
         fig.update_layout(
-            title=f"Día: {trade['Regla NY']} | {trade['Tipo']} | Res: {trade['Resultado']}",
+            title=f"Día: {dia_str} | {trade['Tipo']} | Res: {trade['Resultado']}",
             yaxis_title="Precio Bitcoin (USD)", height=650, xaxis_rangeslider_visible=False, template="plotly_dark",
             margin=dict(l=50, r=50, t=80, b=50)
         )
