@@ -5,18 +5,18 @@ import plotly.graph_objects as go
 from datetime import timedelta
 import time
 
-st.set_page_config(page_title="BOT SMC Sniper (3-Velas FVG) - Bitcoin", layout="wide")
+st.set_page_config(page_title="BOT SMC Limit Sniper - Bitcoin", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
 with st.sidebar.form(key='panel_ajustes'):
-    st.header("⚙️ Ajustes SMC Sniper")
+    st.header("⚙️ SMC: Entrada al Toque")
     st.markdown("""
-    **Nueva Regla de Entrada:**
-    - Sweep en NY (08:00 a 10:30).
-    - Esperar patrón de **3 velas** con Imbalance (FVG).
-    - **Limit:** Borde del Imbalance (Vela 3).
+    **Reglas de Francotirador:**
+    - **Sweep** entre 08:00 y 10:30 NY.
+    - Se busca Patrón de **3 Velas** con FVG.
+    - **Entrada Limit:** Se activa "apenas toca" el borde del FVG (Vela 3).
     - **Stop Loss:** Extremo de la Vela 1 del patrón.
     """)
     
@@ -29,9 +29,9 @@ with st.sidebar.form(key='panel_ajustes'):
     dias_historial = st.slider("Días de Backtesting", 1, 30, 15)
     
     opciones_ratio = {1.0: "1:1", 1.5: "1:1.50", 2.0: "1:2", 2.5: "1:2.50", 3.0: "1:3", 4.0: "1:4"}
-    ratio_rr = st.selectbox("Ratio Riesgo/Beneficio", options=list(opciones_ratio.keys()), format_func=lambda x: opciones_ratio[x], index=3) # Por defecto 1:2.5
+    ratio_rr = st.selectbox("Ratio Riesgo/Beneficio", options=list(opciones_ratio.keys()), format_func=lambda x: opciones_ratio[x], index=3)
     
-    ejecutar_btn = st.form_submit_button("Ejecutar Backtest Sniper BTC")
+    ejecutar_btn = st.form_submit_button("Ejecutar Backtest Sniper Limit")
 
 # ==========================================
 # 2. CONEXIÓN A BINGX (1m)
@@ -74,7 +74,7 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (PATRÓN 3 VELAS)
+# 3. MOTOR DE BACKTESTING (ENTRADA AL TOQUE)
 # ==========================================
 def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
@@ -95,7 +95,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
         liq_max = velas_liq['High'].max()
         liq_min = velas_liq['Low'].min()
         
-        # 2. Killzone NY (08:00 a 10:30 NY)
+        # 2. Búsqueda de Entradas NY (08:00 a 10:30 NY)
         horario_ny = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time >= hora_fin_liq)]
         
         estado = "Buscando Sweep"
@@ -108,7 +108,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             idx = horario_ny.index[i]
             row = horario_ny.iloc[i]
             
-            # Limitar búsqueda de entradas hasta las 10:30 NY
+            # Limitar búsqueda de setups nuevos hasta las 10:30 NY
             if idx.time() > pd.to_datetime('10:30').time() and entrada is None:
                 break 
                 
@@ -119,19 +119,19 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 elif row['Low'] < liq_min:
                     estado = "Sweep Minimo"
             
-            # FASE 2: Buscar el patrón de 3 velas (FVG) después del Sweep
+            # FASE 2: Buscar el patrón FVG de 3 velas exacto tras la manipulación
             elif estado == "Sweep Maximo":
                 if i >= 2:
-                    c1 = horario_ny.iloc[i-2]
-                    c2 = horario_ny.iloc[i-1]
-                    c3 = row
+                    c1, c2, c3 = horario_ny.iloc[i-2], horario_ny.iloc[i-1], row
                     
-                    # Confirmación de FVG Bajista: Minimo de C1 > Maximo de C3
+                    # FVG Bajista (Venta): El mínimo de Vela 1 es mayor al máximo de Vela 3
                     if c1['Low'] > c3['High'] and c1['Close'] > c3['Close']:
-                        entrada_limit = c3['High'] # Borde inferior del FVG (Vela 3)
-                        stop_loss = c1['High']     # REGLA NUEVA: Máximo de la Vela 1
+                        # La entrada exacta se da APENAS el precio suba y toque el máximo de la Vela 3
+                        entrada_limit = c3['High'] 
+                        # Stop Loss exacto en el máximo de la Vela 1 (donde inició el desequilibrio)
+                        stop_loss = c1['High']     
                         
-                        if entrada_limit < stop_loss: # Validar que la estructura sea correcta
+                        if entrada_limit < stop_loss: 
                             tp_teorico = entrada_limit - (abs(entrada_limit - stop_loss) * ratio)
                             fvg_top, fvg_bottom = c1['Low'], c3['High']
                             vela_1_time = horario_ny.index[i-2]
@@ -139,35 +139,35 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                             
             elif estado == "Sweep Minimo":
                 if i >= 2:
-                    c1 = horario_ny.iloc[i-2]
-                    c2 = horario_ny.iloc[i-1]
-                    c3 = row
+                    c1, c2, c3 = horario_ny.iloc[i-2], horario_ny.iloc[i-1], row
                     
-                    # Confirmación de FVG Alcista: Maximo de C1 < Minimo de C3
+                    # FVG Alcista (Compra): El máximo de Vela 1 es menor al mínimo de Vela 3
                     if c1['High'] < c3['Low'] and c1['Close'] < c3['Close']:
-                        entrada_limit = c3['Low']  # Borde superior del FVG (Vela 3)
-                        stop_loss = c1['Low']      # REGLA NUEVA: Mínimo de la Vela 1
+                        # La entrada exacta se da APENAS el precio baje y toque el mínimo de la Vela 3
+                        entrada_limit = c3['Low']  
+                        # Stop Loss exacto en el mínimo de la Vela 1 
+                        stop_loss = c1['Low']      
                         
-                        if entrada_limit > stop_loss: # Validar estructura
+                        if entrada_limit > stop_loss: 
                             tp_teorico = entrada_limit + (abs(entrada_limit - stop_loss) * ratio)
                             fvg_top, fvg_bottom = c3['Low'], c1['High']
                             vela_1_time = horario_ny.index[i-2]
                             estado = "Esperando Retroceso Long"
 
-            # FASE 3: Activar Orden Limit en el Retroceso
+            # FASE 3: Activar la Orden Limit APENAS TOQUE el nivel calculado
             elif estado == "Esperando Retroceso Short":
                 if row['High'] >= stop_loss or row['Low'] <= tp_teorico:
-                    estado = "Buscando Sweep" # Setup invalidado antes de entrar
+                    estado = "Buscando Sweep" # Invalida el setup si el precio se escapó
                 elif row['High'] >= entrada_limit:
-                    entrada, tipo_trade = entrada_limit, 'Short 🔴'
-                    break # Entramos!
+                    entrada, tipo_trade = entrada_limit, 'Short 🔴' # ¡Toque y entrada instantánea!
+                    break 
                     
             elif estado == "Esperando Retroceso Long":
                 if row['Low'] <= stop_loss or row['High'] >= tp_teorico:
-                    estado = "Buscando Sweep" # Setup invalidado antes de entrar
+                    estado = "Buscando Sweep" 
                 elif row['Low'] <= entrada_limit:
-                    entrada, tipo_trade = entrada_limit, 'Long 🟢'
-                    break # Entramos!
+                    entrada, tipo_trade = entrada_limit, 'Long 🟢' # ¡Toque y entrada instantánea!
+                    break 
 
         # FASE 4: Gestión del Trade (hasta las 12:00)
         if entrada is not None:
@@ -177,13 +177,13 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             riesgo_usd = capital_actual * (riesgo_pct / 100)
             resultado, fecha_cierre = "Sin Resolución", None
             
-            # Revisamos las velas a partir del momento de entrada
+            # Revisamos qué toca primero el precio después de la entrada
             idx_entrada = horario_ny.index.get_loc(idx)
             df_post = horario_ny.iloc[idx_entrada:]
             limite_cierre = idx.replace(hour=12, minute=0, second=0)
             
             for jdx, vela in df_post.iterrows():
-                # Cierre Forzado a las 12:00 NY
+                # Cierre Forzado de seguridad a las 12:00 NY
                 if jdx >= limite_cierre:
                     precio_cierre = vela['Open']
                     dist = (entrada - precio_cierre) if "Short" in tipo_trade else (precio_cierre - entrada)
@@ -192,13 +192,13 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     fecha_cierre = jdx
                     break
                 
-                # Cierre por SL
+                # Evaluación Intrabarra: ¿Tocó Stop Loss?
                 if ("Long" in tipo_trade and vela['Low'] <= stop_loss) or ("Short" in tipo_trade and vela['High'] >= stop_loss):
                     resultado, pnl_usd = "Pérdida (SL) ❌", -riesgo_usd
                     fecha_cierre = jdx
                     break
                 
-                # Cierre por TP
+                # Evaluación Intrabarra: ¿Tocó Take Profit?
                 elif ("Long" in tipo_trade and vela['High'] >= take_profit) or ("Short" in tipo_trade and vela['Low'] <= take_profit):
                     resultado, pnl_usd = "Ganancia (TP) ✅", riesgo_usd * ratio
                     fecha_cierre = jdx
@@ -219,15 +219,15 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y RESULTADOS
 # ==========================================
-st.title("🎯 BOT SMC Sniper: FVG 3-Velas (Bitcoin)")
+st.title("🎯 BOT SMC Sniper: FVG 3-Velas Al Toque")
 
 df_btc = obtener_datos_bingx(dias_historial)
 df_operaciones = ejecutar_backtest(df_btc, ratio_rr, capital_inicial, riesgo_pct)
 
 if df_btc.empty:
-    st.warning("No se pudieron cargar los datos.")
+    st.warning("No se pudieron cargar los datos de BingX.")
 elif df_operaciones.empty:
-    st.info("No hubo trades que cumplieran el patrón exacto de 3 velas con retroceso al Imbalance.")
+    st.info("No hubo trades que cumplieran el patrón FVG de 3 velas exactas con entrada al toque.")
 else:
     st.subheader("📊 Resumen de Rendimiento SMC Sniper")
     
@@ -252,15 +252,15 @@ else:
 
     st.divider()
     
-    st.subheader("🔍 Visualizador del Patrón de Alta Precisión")
+    st.subheader("🔍 Visualizador del Patrón de Entrada")
     opciones_trades = df_operaciones['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M').tolist()
-    trade_seleccionado = st.selectbox("Selecciona un trade para ver la Vela 1, FVG y la Entrada:", opciones_trades)
+    trade_seleccionado = st.selectbox("Selecciona un trade para visualizar el toque al FVG:", opciones_trades)
     
     if trade_seleccionado:
         trade = df_operaciones[df_operaciones['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M') == trade_seleccionado].iloc[0]
         dia_str = trade['Apertura (NY)'].strftime('%Y-%m-%d')
         
-        # Gráfica de 06:00 a 12:30 
+        # Gráfica de 06:00 a 12:30 para apreciar la liquidez previa y la gestión 
         df_dia = df_btc.loc[f"{dia_str} 06:00:00":f"{dia_str} 12:30:00"]
         
         fig = go.Figure(data=[go.Candlestick(
@@ -268,27 +268,28 @@ else:
         )])
         
         # Líneas de Liquidez
-        fig.add_hline(y=trade['Liq_Max'], line_dash="dash", line_color="orange", annotation_text="Max (Asia/Londres)")
-        fig.add_hline(y=trade['Liq_Min'], line_dash="dash", line_color="orange", annotation_text="Min (Asia/Londres)")
+        fig.add_hline(y=trade['Liq_Max'], line_dash="dash", line_color="rgba(255, 165, 0, 0.5)", annotation_text="Max (Asia/Londres)")
+        fig.add_hline(y=trade['Liq_Min'], line_dash="dash", line_color="rgba(255, 165, 0, 0.5)", annotation_text="Min (Asia/Londres)")
         
-        # Resaltar el Imbalance (FVG)
+        # Resaltar el FVG con una caja verde/roja suave según la dirección
+        color_caja = "rgba(0, 255, 0, 0.15)" if "Long" in trade['Tipo'] else "rgba(255, 0, 0, 0.15)"
         fig.add_hrect(
-            y0=trade['FVG_Bottom'], y1=trade['FVG_Top'], line_width=0, fillcolor="rgba(255, 255, 0, 0.2)",
+            y0=trade['FVG_Bottom'], y1=trade['FVG_Top'], line_width=1, line_color="yellow", fillcolor=color_caja,
             annotation_text="Hueco FVG", annotation_position="top left"
         )
+        
+        # Marcar la Vela 1 de forma precisa
+        fig.add_trace(go.Scatter(
+            x=[trade['Vela1_Time']], y=[trade['Stop Loss']], mode='markers', name='Origen Vela 1 (SL)',
+            marker=dict(symbol="x", size=10, color="white", line=dict(width=2, color='red'))
+        ))
         
         color = "#00FF00" if "Long" in trade['Tipo'] else "#FF0000"
         simbolo = "triangle-up" if "Long" in trade['Tipo'] else "triangle-down"
         
-        # Marcar la "Vela 1" que generó el SL
+        # Marcar exactamente el "Toque" donde se activó la orden limit
         fig.add_trace(go.Scatter(
-            x=[trade['Vela1_Time']], y=[trade['Stop Loss']], mode='markers', name='Origen Vela 1 (SL)',
-            marker=dict(symbol="x", size=10, color="red")
-        ))
-        
-        # Punto de Entrada
-        fig.add_trace(go.Scatter(
-            x=[trade['Apertura (NY)']], y=[trade['Entrada']], mode='markers', name='Limit Activada (Vela 3)',
+            x=[trade['Apertura (NY)']], y=[trade['Entrada']], mode='markers', name='Entrada al Toque (Vela 3)',
             marker=dict(symbol=simbolo, size=15, color=color, line=dict(width=2, color='white'))
         ))
         
@@ -296,7 +297,8 @@ else:
         fig.add_hline(y=trade['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
         
         fig.update_layout(
-            title=f"Trade {trade['Tipo']} | Entrada Perfecta en FVG | Res: {trade['Resultado']}",
-            yaxis_title="Precio Bitcoin (USD)", height=650, xaxis_rangeslider_visible=False, template="plotly_dark"
+            title=f"Trade {trade['Tipo']} | Entrada Perfecta al Toque | Res: {trade['Resultado']}",
+            yaxis_title="Precio Bitcoin (USD)", height=650, xaxis_rangeslider_visible=False, template="plotly_dark",
+            margin=dict(l=50, r=50, t=80, b=50)
         )
         st.plotly_chart(fig, use_container_width=True)
