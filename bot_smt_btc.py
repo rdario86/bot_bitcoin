@@ -16,6 +16,7 @@ with st.sidebar.form(key='panel_ajustes'):
     - **Long:** Cruce EMA 20 > 55. La vela debe ser **Verde**. Si es Roja, se espera a la siguiente. Si la siguiente es Roja, se aborta.
     - **Short:** Cruce EMA 20 < 55. La vela debe ser **Roja**. Si es Verde, se espera a la siguiente. Si la siguiente es Verde, se aborta.
     - **Stop Loss Estricto:** Extremo de la vela de entrada (o del micro-patrón de confirmación).
+    - **Horario:** Entradas de 08:00 a 10:30. Cierre forzado a las 11:00.
     """)
     
     st.subheader("💰 Gestión de Capital")
@@ -87,7 +88,8 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     
     for fecha in fechas:
         hora_inicio = pd.to_datetime('08:00').time()
-        hora_fin = pd.to_datetime('12:00').time()
+        hora_fin_entradas = pd.to_datetime('10:30').time()
+        hora_cierre_forzado = pd.to_datetime('11:00').time()
         
         horario_dia = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time >= hora_inicio)]
         
@@ -135,8 +137,8 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     # Independientemente de si entró o falló, se resetea la espera
                     estado_espera = None
                 
-                # B. Buscar nuevos cruces (Solo si no estamos esperando, y dentro del horario)
-                if estado_espera is None and idx.time() <= hora_fin:
+                # B. Buscar nuevos cruces (Solo si no estamos esperando, y dentro del horario 08:00 - 10:30)
+                if estado_espera is None and idx.time() <= hora_fin_entradas:
                     
                     # Cruce Alcista (EMA 20 > EMA 55)
                     if prev_row['EMA20'] <= prev_row['EMA55'] and row['EMA20'] > row['EMA55']:
@@ -174,13 +176,13 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 riesgo_usd = capital_actual * (riesgo_pct / 100)
                 fecha_cierre = idx
                 
-                # Cierre Forzado a las 16:00
-                if idx.time() >= pd.to_datetime('16:00').time():
+                # Cierre Forzado a las 11:00
+                if idx.time() >= hora_cierre_forzado:
                     precio_cierre = row['Open']
                     dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
                     riesgo_precio = abs(entrada - stop_loss)
                     pnl_usd = (dist / riesgo_precio) * riesgo_usd
-                    resultado = "Ganancia (16:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (16:00) ⏱️❌"
+                    resultado = "Ganancia (11:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (11:00) ⏱️❌"
                     
                 # Toca Stop Loss
                 elif ("Long" in tipo_trade and row['Low'] <= stop_loss) or ("Short" in tipo_trade and row['High'] >= stop_loss):
@@ -271,7 +273,8 @@ else:
             trade = df_mostrar[df_mostrar['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M') == fecha_str].iloc[0]
             dia_str = trade['Apertura (NY)'].strftime('%Y-%m-%d')
             
-            df_dia = df_btc.loc[f"{dia_str} 07:30:00":f"{dia_str} 16:30:00"]
+            # Ajustado para que el gráfico muestre bien desde antes de la apertura hasta después del cierre
+            df_dia = df_btc.loc[f"{dia_str} 07:30:00":f"{dia_str} 11:30:00"]
             
             fig = go.Figure()
             
