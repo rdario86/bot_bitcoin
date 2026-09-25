@@ -4,7 +4,7 @@ import ccxt
 import plotly.graph_objects as go
 import time
 
-st.set_page_config(page_title="BOT EMAs (20 y 55) - Bitcoin", layout="wide")
+st.set_page_config(page_title="BOT EMAs (20 y 55) - Stop en Vela", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA
@@ -12,12 +12,12 @@ st.set_page_config(page_title="BOT EMAs (20 y 55) - Bitcoin", layout="wide")
 with st.sidebar.form(key='panel_ajustes'):
     st.header("⚙️ Estrategia Cruce de EMAs")
     st.markdown("""
-    **Reglas del Video:**
+    **Reglas Actualizadas:**
     - **Indicadores:** EMA 20 y EMA 55.
     - **Señal:** Cruce de EMAs.
     - **Horario Entradas:** 08:00 a 12:00 NY.
     - **Cierre Forzado:** 16:00 NY.
-    - **Stop Loss:** Último swing (15 velas).
+    - **Stop Loss Estricto:** Mínimo/Máximo de la vela exacta que hace el cruce.
     """)
     
     st.subheader("💰 Gestión de Capital")
@@ -77,7 +77,7 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (CRUCE EMAS)
+# 3. MOTOR DE BACKTESTING (CRUCE EMAS CON SL EN VELA)
 # ==========================================
 def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
@@ -88,7 +88,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     capital_actual = capital_inicial
     
     for fecha in fechas:
-        # Rango operativo
         hora_inicio = pd.to_datetime('08:00').time()
         hora_fin = pd.to_datetime('12:00').time()
         
@@ -110,14 +109,13 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 if prev_row['EMA20'] <= prev_row['EMA55'] and row['EMA20'] > row['EMA55']:
                     trade_abierto = True
                     tipo_trade = 'Long 🟢'
-                    entrada = row['Close'] # Se entra al cierre de la vela que cruza
+                    entrada = row['Close'] 
                     
-                    # Stop Loss: Mínimo del swing que generó el cruce (últimas 15 velas)
-                    idx_global = df_calc.index.get_loc(idx)
-                    velas_previas = df_calc.iloc[max(0, idx_global-15):idx_global]
-                    stop_loss = velas_previas['Low'].min()
+                    # Stop Loss exacto en el mínimo de la vela que cruza
+                    stop_loss = row['Low']
                     
-                    if stop_loss >= entrada: stop_loss = entrada * 0.999 # Protección anti-errores
+                    # Protección por si la vela no tiene mecha inferior (Open == Low) y el stop queda en 0 distancia
+                    if stop_loss >= entrada: stop_loss = entrada * 0.999 
                         
                     riesgo = entrada - stop_loss
                     take_profit = entrada + (riesgo * ratio)
@@ -129,10 +127,8 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     tipo_trade = 'Short 🔴'
                     entrada = row['Close']
                     
-                    # Stop Loss: Máximo del swing (últimas 15 velas)
-                    idx_global = df_calc.index.get_loc(idx)
-                    velas_previas = df_calc.iloc[max(0, idx_global-15):idx_global]
-                    stop_loss = velas_previas['High'].max()
+                    # Stop Loss exacto en el máximo de la vela que cruza
+                    stop_loss = row['High']
                     
                     if stop_loss <= entrada: stop_loss = entrada * 1.001 
                         
@@ -140,7 +136,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     take_profit = entrada - (riesgo * ratio)
                     idx_entrada = idx
 
-            # 2. GESTIÓN DEL TRADE (Si hay posición abierta)
+            # 2. GESTIÓN DEL TRADE
             elif trade_abierto:
                 resultado = None
                 fecha_cierre = idx
@@ -164,7 +160,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     pnl_usd = riesgo_usd * ratio
                     resultado = "Ganancia (TP) ✅"
                 
-                # Registro y reinicio para permitir múltiples trades al día
                 if resultado is not None:
                     capital_actual += pnl_usd
                     operaciones.append({
@@ -179,14 +174,13 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y COMPARATIVA DE RATIOS
 # ==========================================
-st.title("📈 BOT Tendencia: Cruce de EMAs (20 y 55)")
+st.title("📈 BOT Tendencia: Cruce de EMAs (SL en Vela Gatillo)")
 
 df_btc = obtener_datos_bingx(dias_historial)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos de BingX.")
 else:
-    # Correr el backtest para los 3 ratios en simultáneo
     df_rr1 = ejecutar_backtest(df_btc, 1.0, capital_inicial, riesgo_pct)
     df_rr2 = ejecutar_backtest(df_btc, 2.0, capital_inicial, riesgo_pct)
     df_rr3 = ejecutar_backtest(df_btc, 3.0, capital_inicial, riesgo_pct)
@@ -217,8 +211,7 @@ else:
     
     st.divider()
 
-    # Selector para ver la tabla y la gráfica del Ratio deseado
-    st.subheader("🔍 Visualizador de Operaciones")
+    st.subheader("🔍 Visualizador de Operaciones (Micro SL)")
     ratio_seleccionado = st.radio("Selecciona el Ratio para ver el detalle de sus operaciones:", ["Ratio 1:1", "Ratio 1:2", "Ratio 1:3"], horizontal=True)
     
     df_mostrar = df_rr1 if "1:1" in ratio_seleccionado else (df_rr2 if "1:2" in ratio_seleccionado else df_rr3)
@@ -226,7 +219,6 @@ else:
     if df_mostrar.empty:
         st.info("No hay trades en este periodo.")
     else:
-        # Tabla detallada
         df_tabla = df_mostrar.copy()
         df_tabla.index = range(1, len(df_tabla) + 1)
         df_tabla['Apertura (NY)'] = df_tabla['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M')
@@ -236,31 +228,26 @@ else:
             
         st.dataframe(df_tabla[['Apertura (NY)', 'Cierre (NY)', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado', 'PnL ($)', 'Balance']], use_container_width=True)
         
-        # Gráfica Plotly
         st.write("### 📊 Gráfica de Entradas y EMAs")
         opciones_trades = [f"{row['Apertura (NY)'].strftime('%Y-%m-%d %H:%M')} | {row['Tipo']}" for _, row in df_mostrar.iterrows()]
-        trade_str = st.selectbox("Selecciona un trade para ver el Cruce:", opciones_trades)
+        trade_str = st.selectbox("Selecciona un trade para ver el Cruce y el Micro SL:", opciones_trades)
         
         if trade_str:
             fecha_str = trade_str.split(" | ")[0]
             trade = df_mostrar[df_mostrar['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M') == fecha_str].iloc[0]
             dia_str = trade['Apertura (NY)'].strftime('%Y-%m-%d')
             
-            # Gráfica de 07:30 a 16:30
             df_dia = df_btc.loc[f"{dia_str} 07:30:00":f"{dia_str} 16:30:00"]
             
             fig = go.Figure()
             
-            # Velas
             fig.add_trace(go.Candlestick(
                 x=df_dia.index, open=df_dia['Open'], high=df_dia['High'], low=df_dia['Low'], close=df_dia['Close'], name='BTC/USDT'
             ))
             
-            # EMAs
             fig.add_trace(go.Scatter(x=df_dia.index, y=df_dia['EMA20'], mode='lines', name='EMA 20', line=dict(color='#00BFFF', width=2)))
             fig.add_trace(go.Scatter(x=df_dia.index, y=df_dia['EMA55'], mode='lines', name='EMA 55', line=dict(color='#FFA500', width=2)))
             
-            # Punto de Entrada
             color = "#00FF00" if "Long" in trade['Tipo'] else "#FF0000"
             simbolo = "triangle-up" if "Long" in trade['Tipo'] else "triangle-down"
             
@@ -269,7 +256,13 @@ else:
                 marker=dict(symbol=simbolo, size=18, color=color, line=dict(width=2, color='white'))
             ))
             
-            fig.add_hline(y=trade['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Último Swing)")
+            # Se añade un marcador visual extra para ver exactamente dónde quedó anclado el SL en la mecha
+            fig.add_trace(go.Scatter(
+                x=[trade['Apertura (NY)']], y=[trade['Stop Loss']], mode='markers', name='Ancla de SL',
+                marker=dict(symbol="x", size=10, color="white", line=dict(width=2, color='red'))
+            ))
+            
+            fig.add_hline(y=trade['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Extremo Vela)")
             fig.add_hline(y=trade['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
             
             fig.update_layout(
