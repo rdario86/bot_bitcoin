@@ -3,7 +3,7 @@ import pandas as pd
 import time
 from datetime import datetime
 import pytz
-import math # 🌟 Requerido para evitar redondeos peligrosos
+import math
 
 # ==========================================
 # 1. CONFIGURACIÓN DEL USUARIO
@@ -12,8 +12,8 @@ API_KEY = 'WJkk2CHt59Gv3iphdXf03NozkFYlxwaCrNqFi9or9CxPWHTRNmUA72O3uCrXg98ZUCoNp
 API_SECRET = 'sOq1gjKraySQWcu34ZkW8SqoSCwZiWzR8I7VCXAZDmi88xVMLkQye6ZQiOsdEGvgt4KONydDXsFRujxlT1FTQ'
 
 SIMBOLO = 'BTC/USDT:USDT'
-APALANCAMIENTO = 25 # Apalancamiento Fijo
-RATIO_RR = 2.5      # Ratio Beneficio (1:2.50)
+APALANCAMIENTO = 25 
+RATIO_RR = 2.5      
 
 # Conexión a BingX
 exchange = ccxt.bingx({
@@ -54,7 +54,7 @@ def ejecutar_orden(simbolo, tipo_trade, entrada, stop_loss, take_profit):
             print("❌ Error: No hay balance USDT disponible para operar.")
             return False
 
-        # 🌟 BUFFER DE SEGURIDAD (Dejamos un 5% libre para comisiones y volatilidad)
+        # BUFFER DE SEGURIDAD (5%)
         balance_utilizable = balance_usdt * 0.95
 
         riesgo_precio = abs(entrada - stop_loss)
@@ -64,62 +64,46 @@ def ejecutar_orden(simbolo, tipo_trade, entrada, stop_loss, take_profit):
         riesgo_cuenta_pct = sl_porcentaje * APALANCAMIENTO
         monto_a_arriesgar = balance_utilizable * (riesgo_cuenta_pct / 100)
         
-        # 🌟 TRUNCADO HACIA ABAJO (Corta los decimales, NO los redondea)
+        # TRUNCADO HACIA ABAJO
         cantidad_bruta = monto_a_arriesgar / riesgo_precio
         cantidad = math.floor(cantidad_bruta * 10000) / 10000 
         
         if cantidad <= 0:
-            print("❌ Error: Capital insuficiente para comprar el mínimo permitido de BTC.")
+            print("❌ Error: Capital insuficiente para el mínimo de BTC.")
             return False
             
         lado_entrada = 'buy' if tipo_trade == 'Long' else 'sell'
-        lado_salida = 'sell' if tipo_trade == 'Long' else 'buy'
         position_side = 'LONG' if tipo_trade == 'Long' else 'SHORT'
         
         print(f"💰 [CAPITAL] Balance Utilizable: ${balance_utilizable:.2f} USDT")
         print(f"🧮 [DEBUG] Tamaño SL: {sl_porcentaje:.2f}% | Apalancamiento: {APALANCAMIENTO}x")
         print(f"⚠️ [RIESGO] Si toca SL perderás: {riesgo_cuenta_pct:.2f}% del capital (${monto_a_arriesgar:.2f} USDT)")
-        print(f"🚀 Lanzando orden REAL {lado_entrada.upper()} por {cantidad} BTC...")
+        print(f"🚀 Lanzando ORDEN MAESTRA {lado_entrada.upper()} por {cantidad} BTC con SL y TP anidados...")
         
-        # 1. ORDEN MARKET DE ENTRADA
+        # 🌟 NUEVA ORDEN MAESTRA (Incluye Entrada, SL y TP de una vez)
+        # BingX soporta parámetros nativos 'stopLoss' y 'takeProfit' al abrir el trade.
+        parametros_avanzados = {
+            'positionSide': position_side,
+            'stopLoss': {
+                'type': 'STOP_MARKET',
+                'stopPrice': float(stop_loss)
+            },
+            'takeProfit': {
+                'type': 'TAKE_PROFIT_MARKET',
+                'stopPrice': float(take_profit)
+            }
+        }
+        
         orden = exchange.create_order(
             symbol=simbolo, 
             type='MARKET', 
             side=lado_entrada, 
-            amount=cantidad, 
-            params={'positionSide': position_side}
+            amount=cantidad,
+            price=None,
+            params=parametros_avanzados
         )
-        print(f"✅ ¡Posición abierta! ID: {orden.get('id')}")
-        
-        time.sleep(2) 
-        
-        # 2. COLOCAR STOP LOSS 
-        print(f"🛡️ Colocando Stop Loss estructural en: {stop_loss}")
-        try:
-            exchange.create_order(
-                symbol=simbolo, 
-                type='STOP_MARKET', 
-                side=lado_salida, 
-                amount=cantidad, 
-                params={'positionSide': position_side, 'stopPrice': stop_loss}
-            )
-            print("✅ Stop Loss automatizado con éxito.")
-        except Exception as e:
-            print(f"⚠️ Error al colocar SL automático: {e}")
-            
-        # 3. COLOCAR TAKE PROFIT 
-        print(f"🎯 Colocando Take Profit en: {take_profit}")
-        try:
-            exchange.create_order(
-                symbol=simbolo, 
-                type='TAKE_PROFIT_MARKET', 
-                side=lado_salida, 
-                amount=cantidad, 
-                params={'positionSide': position_side, 'stopPrice': take_profit}
-            )
-            print("✅ Take Profit automatizado con éxito.")
-        except Exception as e:
-            print(f"⚠️ Error al colocar TP automático: {e}")
+        print(f"✅ ¡Posición abierta exitosamente junto con su SL ({stop_loss}) y TP ({take_profit})!")
+        print(f"ID de Orden: {orden.get('id')}")
             
         return True
     except Exception as e:
@@ -129,15 +113,12 @@ def ejecutar_orden(simbolo, tipo_trade, entrada, stop_loss, take_profit):
 def cerrar_posiciones_emergencia(simbolo, hora_texto="11:00"):
     try:
         print(f"🕒 {hora_texto} NY alcanzadas. Cancelando órdenes y cerrando posiciones...")
-        
         exchange.cancel_all_orders(simbolo)
         print("✅ Órdenes pendientes canceladas.")
         
         posiciones = exchange.fetch_positions([simbolo])
-        
         for pos in posiciones:
             cantidad = float(pos.get('contracts', 0))
-            
             if cantidad > 0:
                 lado = pos['side']
                 lado_cierre = 'sell' if lado == 'long' else 'buy'
@@ -149,10 +130,9 @@ def cerrar_posiciones_emergencia(simbolo, hora_texto="11:00"):
                     type='MARKET',
                     side=lado_cierre,
                     amount=cantidad,
-                    params={'positionSide': position_side}
+                    params={'positionSide': position_side, 'reduceOnly': True}
                 )
-                print(f"✅ Cierre por fin de sesión ({hora_texto}) completado con éxito.")
-                
+                print(f"✅ Cierre por fin de sesión ({hora_texto}) completado.")
     except Exception as e:
         print(f"❌ Error cerrando posición: {e}")
 
@@ -160,19 +140,15 @@ def cerrar_posiciones_emergencia(simbolo, hora_texto="11:00"):
 # 3. BUCLE DEL BOT (VIGÍA)
 # ==========================================
 def iniciar_bot():
-    print("🤖 BOT ORB (Stop Dinámico) - Blindaje Anti-Spam Activado. Esperando...")
+    print("🤖 BOT ORB (Stop Dinámico Preciso) - Blindaje Anti-Spam Activado. Esperando...")
     
     trade_abierto_hoy = False
     estado_ruptura = None
     pullback_hecho = False
-    
     tiempo_ruptura = None
     tiempo_pullback = None
-    
     max_orb = None
     min_orb = None
-    
-    # 🌟 NUEVA VARIABLE: El SL dinámico que se actualizará en vivo
     stop_loss_estructural = None 
     
     while True:
@@ -180,7 +156,7 @@ def iniciar_bot():
             ahora_ny = datetime.now(tz_ny)
             hora_actual = ahora_ny.time()
             
-            # Reseteo diario a medianoche
+            # Reseteo diario
             if hora_actual.hour == 0 and hora_actual.minute == 0:
                 trade_abierto_hoy = False
                 estado_ruptura = None
@@ -220,8 +196,8 @@ def iniciar_bot():
                 df = obtener_velas(SIMBOLO, timeframe='1m', limite=5)
                 
                 if not df.empty:
-                    vela_actual = df.iloc[-1] # Vela viva en formación
-                    vela_anterior = df.iloc[-2] # Vela recién cerrada
+                    vela_actual = df.iloc[-1] 
+                    vela_anterior = df.iloc[-2] 
                     
                     # FASE 1: BÚSQUEDA DE RUPTURA
                     if estado_ruptura is None:
@@ -229,76 +205,72 @@ def iniciar_bot():
                         
                         if cierre_ant > max_orb:
                             estado_ruptura = 'Long'
-                            stop_loss_estructural = vela_anterior['Low'] # SL inicial
+                            # 🌟 FIX: Anclamos el SL al CIERRE de la vela de ruptura para que baje con el pullback
+                            stop_loss_estructural = vela_anterior['Close'] 
                             tiempo_ruptura = vela_anterior.name 
-                            print(f"👀 [Paso 1] Ruptura ALCISTA. SL inicial: {stop_loss_estructural}. Esperando Pullback...")
+                            print(f"👀 [Paso 1] Ruptura ALCISTA. Iniciando rastreo de SL...")
                             
                         elif cierre_ant < min_orb:
                             estado_ruptura = 'Short'
-                            stop_loss_estructural = vela_anterior['High'] # SL inicial
+                            # 🌟 FIX: Anclamos el SL al CIERRE de la vela de ruptura para que suba con el pullback
+                            stop_loss_estructural = vela_anterior['Close'] 
                             tiempo_ruptura = vela_anterior.name 
-                            print(f"👀 [Paso 1] Ruptura BAJISTA. SL inicial: {stop_loss_estructural}. Esperando Pullback...")
+                            print(f"👀 [Paso 1] Ruptura BAJISTA. Iniciando rastreo de SL...")
                     
-                    # FASE 2 y 3: RASTREO DE PRECIO, PULLBACK Y CONFIRMACIÓN
+                    # FASE 2 y 3: RASTREO DE PRECIO Y CONFIRMACIÓN
                     else:
-                        # 🌟 ACTUALIZACIÓN DINÁMICA DEL STOP LOSS EN TIEMPO REAL
-                        # Leemos tanto la vela anterior como los mechazos en vivo de la vela actual
+                        # 🌟 RASTREO DINÁMICO PRECISO DEL SL
                         if estado_ruptura == 'Long':
                             sl_nuevo = min(stop_loss_estructural, vela_anterior['Low'], vela_actual['Low'])
                             if sl_nuevo < stop_loss_estructural:
                                 stop_loss_estructural = sl_nuevo
-                                print(f"📉 SL Estructural actualizado (Más bajo): {stop_loss_estructural}")
+                                print(f"📉 SL Rastreado al mínimo del Pullback: {stop_loss_estructural}")
                                 
                         elif estado_ruptura == 'Short':
                             sl_nuevo = max(stop_loss_estructural, vela_anterior['High'], vela_actual['High'])
                             if sl_nuevo > stop_loss_estructural:
                                 stop_loss_estructural = sl_nuevo
-                                print(f"📈 SL Estructural actualizado (Más alto): {stop_loss_estructural}")
+                                print(f"📈 SL Rastreado al máximo del Pullback: {stop_loss_estructural}")
                         
                         
-                        # LOGICA DE PULLBACK Y CONFIRMACIÓN
                         if not pullback_hecho:
                             if estado_ruptura == 'Long':
                                 if vela_actual.name > tiempo_ruptura and vela_actual['Low'] <= max_orb:
                                     pullback_hecho = True
                                     tiempo_pullback = vela_actual.name
-                                    print(f"🔥 [Paso 2] ¡Pullback detectado en VIVO! Precio rozó el Techo.")
+                                    print(f"🔥 [Paso 2] Pullback tocado (Techo).")
                                 elif vela_anterior.name > tiempo_ruptura and vela_anterior['Low'] <= max_orb:
                                     pullback_hecho = True
                                     tiempo_pullback = vela_anterior.name
-                                    print(f"🔥 [Paso 2] ¡Pullback detectado (Vela Cerrada)!")
+                                    print(f"🔥 [Paso 2] Pullback tocado (Techo).")
                                     
                             elif estado_ruptura == 'Short':
                                 if vela_actual.name > tiempo_ruptura and vela_actual['High'] >= min_orb:
                                     pullback_hecho = True
                                     tiempo_pullback = vela_actual.name
-                                    print(f"🔥 [Paso 2] ¡Pullback detectado en VIVO! Precio rozó el Suelo.")
+                                    print(f"🔥 [Paso 2] Pullback tocado (Suelo).")
                                 elif vela_anterior.name > tiempo_ruptura and vela_anterior['High'] >= min_orb:
                                     pullback_hecho = True
                                     tiempo_pullback = vela_anterior.name
-                                    print(f"🔥 [Paso 2] ¡Pullback detectado (Vela Cerrada)!")
+                                    print(f"🔥 [Paso 2] Pullback tocado (Suelo).")
                         
                         elif pullback_hecho:
                             if estado_ruptura == 'Long':
                                 if vela_anterior.name >= tiempo_pullback and vela_anterior['Close'] > max_orb:
-                                    print(f"💥 [Paso 3] ¡Confirmación Alcista! Vela cerrada por fuera.")
+                                    print(f"💥 [Paso 3] ¡Confirmación Alcista!")
                                     precio_entrada = vela_anterior['Close']
                                     take_profit = precio_entrada + (abs(precio_entrada - stop_loss_estructural) * RATIO_RR)
-                                    
                                     ejecutar_orden(SIMBOLO, 'Long', precio_entrada, stop_loss_estructural, take_profit)
-                                    
-                                    print("🛑 Cacería del día terminada (independientemente del resultado).")
+                                    print("🛑 Cacería terminada.")
                                     trade_abierto_hoy = True
                                     
                             elif estado_ruptura == 'Short':
                                 if vela_anterior.name >= tiempo_pullback and vela_anterior['Close'] < min_orb:
-                                    print(f"💥 [Paso 3] ¡Confirmación Bajista! Vela cerrada por debajo.")
+                                    print(f"💥 [Paso 3] ¡Confirmación Bajista!")
                                     precio_entrada = vela_anterior['Close']
                                     take_profit = precio_entrada - (abs(precio_entrada - stop_loss_estructural) * RATIO_RR)
-                                    
                                     ejecutar_orden(SIMBOLO, 'Short', precio_entrada, stop_loss_estructural, take_profit)
-                                    
-                                    print("🛑 Cacería del día terminada (independientemente del resultado).")
+                                    print("🛑 Cacería terminada.")
                                     trade_abierto_hoy = True
 
             if max_orb is not None and estado_ruptura is not None and not trade_abierto_hoy and es_hora_operativa:
@@ -307,7 +279,7 @@ def iniciar_bot():
                 time.sleep(20) 
                 
         except Exception as e:
-            print(f"⚠️ Excepción en el ciclo principal: {e}")
+            print(f"⚠️ Excepción en el ciclo: {e}")
             time.sleep(10)
 
 if __name__ == "__main__":
