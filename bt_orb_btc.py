@@ -14,7 +14,7 @@ with st.sidebar.form(key='panel_ajustes'):
     st.header("⚙️ Ajustes ORB BTC (09:30 - 1m)")
     st.markdown("""
     **Estrategia ORB Bitcoin:**
-    - Stop Loss Dinámico: Se ubica en el mínimo/máximo estructural formado durante la fase de pullback, justo antes de la confirmación (segunda ruptura).
+    - Stop Loss Dinámico: Rastrea el Mínimo/Máximo del impulso desde el cierre de la ruptura. Idéntico al bot en vivo.
     """)
     
     st.subheader("💰 Gestión de Capital")
@@ -102,7 +102,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     capital_actual = capital_inicial
     
     for fecha in fechas:
-        if fecha.weekday() >= 5: continue # Omitir fines de semana si se desea operar como Wall Street
+        if fecha.weekday() >= 5: continue # Omitir fines de semana
             
         # 1. Fijar el ORB de los PRIMEROS 5 MINUTOS (09:30 a 09:34 en velas de 1 minuto)
         hora_inicio_orb = pd.to_datetime('09:30').time()
@@ -128,10 +128,12 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     
                     if cierre > max_orb:
                         estado_ruptura = 'Long'
-                        sl_estructural = row['Low']
+                        # 🌟 FIX APLICADO: Anclamos al Cierre para que el rastreo sea milimétrico
+                        sl_estructural = row['Close'] 
                     elif cierre < min_orb:
                         estado_ruptura = 'Short'
-                        sl_estructural = row['High']
+                        # 🌟 FIX APLICADO: Anclamos al Cierre para que el rastreo sea milimétrico
+                        sl_estructural = row['Close'] 
                 
                 # FASE 2 y 3: PULLBACK, RASTREO DE MÍNIMO Y CONFIRMACIÓN
                 else:
@@ -140,7 +142,9 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     stop_loss = 0
                     
                     if estado_ruptura == 'Long':
+                        # Rastreo del "Foso" del pullback
                         sl_estructural = min(sl_estructural, row['Low'])
+                        
                         if not pullback_hecho:
                             if row['Low'] <= max_orb:
                                 pullback_hecho = True
@@ -151,7 +155,9 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                                 stop_loss = sl_estructural 
                                 
                     elif estado_ruptura == 'Short':
+                        # Rastreo del "Pico" del pullback
                         sl_estructural = max(sl_estructural, row['High'])
+                        
                         if not pullback_hecho:
                             if row['High'] >= min_orb:
                                 pullback_hecho = True
