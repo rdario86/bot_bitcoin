@@ -3,6 +3,7 @@ import pandas as pd
 import ccxt
 import plotly.graph_objects as go
 import time
+import math
 
 st.set_page_config(page_title="BOT EMAs (20/55) - Filtro de Color", layout="wide")
 
@@ -66,7 +67,7 @@ def obtener_datos_bingx(dias):
         df = df[~df.index.duplicated(keep='first')]
         df['Date'] = df.index.date
         
-        # Calcular las EMAs (20 y 55)
+        # Calcular las EMAs (Al descargar todo el histórico continuo, la EMA 55 es matemáticamente idéntica a TradingView)
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA55'] = df['Close'].ewm(span=55, adjust=False).mean()
         
@@ -76,7 +77,7 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (CRUCE + FILTRO COLOR)
+# 3. MOTOR DE BACKTESTING (Sincronizado con Bot en Vivo)
 # ==========================================
 def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
@@ -98,7 +99,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
         idx_entrada = None
         
         estado_espera = None
-        crossover_sl_ref = None # Referencia del SL en caso de tener que esperar confirmación
+        crossover_sl_ref = None 
         
         for k in range(1, len(horario_dia)):
             idx = horario_dia.index[k]
@@ -114,13 +115,17 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         trade_abierto = True
                         tipo_trade = 'Long 🟢 (Confirmado)'
                         entrada = row['Close']
-                        # Tomar el mínimo más bajo entre la vela del cruce y esta vela
                         stop_loss = min(crossover_sl_ref, row['Low'])
-                        if stop_loss >= entrada: stop_loss = entrada * 0.999
-                        riesgo_precio = entrada - stop_loss
+                        
+                        # Protección SL Riesgo 0 idéntica al bot en vivo
+                        riesgo_precio = abs(entrada - stop_loss)
+                        if riesgo_precio == 0:
+                            margen = entrada * 0.0005
+                            riesgo_precio = margen
+                            stop_loss = entrada - margen
+                            
                         take_profit = entrada + (riesgo_precio * ratio)
                         idx_entrada = idx
-                    # Independientemente de si entró o falló, se resetea la espera
                     estado_espera = None 
                     
                 elif estado_espera == "Esperando_Short":
@@ -128,27 +133,37 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         trade_abierto = True
                         tipo_trade = 'Short 🔴 (Confirmado)'
                         entrada = row['Close']
-                        # Tomar el máximo más alto entre la vela del cruce y esta vela
                         stop_loss = max(crossover_sl_ref, row['High'])
-                        if stop_loss <= entrada: stop_loss = entrada * 1.001
-                        riesgo_precio = stop_loss - entrada
+                        
+                        # Protección SL Riesgo 0 idéntica al bot en vivo
+                        riesgo_precio = abs(entrada - stop_loss)
+                        if riesgo_precio == 0:
+                            margen = entrada * 0.0005
+                            riesgo_precio = margen
+                            stop_loss = entrada + margen
+                            
                         take_profit = entrada - (riesgo_precio * ratio)
                         idx_entrada = idx
-                    # Independientemente de si entró o falló, se resetea la espera
                     estado_espera = None
                 
-                # B. Buscar nuevos cruces (Solo si no estamos esperando, y dentro del horario 08:00 - 10:30)
-                if estado_espera is None and idx.time() <= hora_fin_entradas:
+                # B. Buscar nuevos cruces (Solo si no venimos de abortar una espera en esta misma vela)
+                elif estado_espera is None and idx.time() <= hora_fin_entradas:
                     
                     # Cruce Alcista (EMA 20 > EMA 55)
-                    if prev_row['EMA20'] <= prev_row['EMA55'] and row['EMA20'] > row['EMA55']:
+                    cruce_alcista = (prev_row['EMA20'] <= prev_row['EMA55']) and (row['EMA20'] > row['EMA55'])
+                    if cruce_alcista:
                         if row['Close'] >= row['Open']: # Vela Verde (Entrada Directa)
                             trade_abierto = True
                             tipo_trade = 'Long 🟢'
                             entrada = row['Close'] 
                             stop_loss = row['Low']
-                            if stop_loss >= entrada: stop_loss = entrada * 0.999 
-                            riesgo_precio = entrada - stop_loss
+                            
+                            riesgo_precio = abs(entrada - stop_loss)
+                            if riesgo_precio == 0:
+                                margen = entrada * 0.0005
+                                riesgo_precio = margen
+                                stop_loss = entrada - margen
+                                
                             take_profit = entrada + (riesgo_precio * ratio)
                             idx_entrada = idx
                         else: # Vela Roja (Poner en espera)
@@ -156,14 +171,20 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                             crossover_sl_ref = row['Low']
                         
                     # Cruce Bajista (EMA 20 < EMA 55)
-                    elif prev_row['EMA20'] >= prev_row['EMA55'] and row['EMA20'] < row['EMA55']:
+                    cruce_bajista = (prev_row['EMA20'] >= prev_row['EMA55']) and (row['EMA20'] < row['EMA55'])
+                    if cruce_bajista:
                         if row['Close'] <= row['Open']: # Vela Roja (Entrada Directa)
                             trade_abierto = True
                             tipo_trade = 'Short 🔴'
                             entrada = row['Close']
                             stop_loss = row['High']
-                            if stop_loss <= entrada: stop_loss = entrada * 1.001 
-                            riesgo_precio = stop_loss - entrada
+                            
+                            riesgo_precio = abs(entrada - stop_loss)
+                            if riesgo_precio == 0:
+                                margen = entrada * 0.0005
+                                riesgo_precio = margen
+                                stop_loss = entrada + margen
+                                
                             take_profit = entrada - (riesgo_precio * ratio)
                             idx_entrada = idx
                         else: # Vela Verde (Poner en espera)
@@ -264,7 +285,6 @@ else:
         st.dataframe(df_tabla[['Apertura (NY)', 'Cierre (NY)', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado', 'PnL ($)', 'Balance']], use_container_width=True)
         
         st.write("### 📊 Gráfica de Entradas y EMAs")
-        # Mostrar en el selector si fue entrada directa o confirmada
         opciones_trades = [f"{row['Apertura (NY)'].strftime('%Y-%m-%d %H:%M')} | {row['Tipo']}" for _, row in df_mostrar.iterrows()]
         trade_str = st.selectbox("Selecciona un trade para ver el Cruce y el Filtro de Color:", opciones_trades)
         
@@ -273,7 +293,6 @@ else:
             trade = df_mostrar[df_mostrar['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M') == fecha_str].iloc[0]
             dia_str = trade['Apertura (NY)'].strftime('%Y-%m-%d')
             
-            # Ajustado para que el gráfico muestre bien desde antes de la apertura hasta después del cierre
             df_dia = df_btc.loc[f"{dia_str} 07:30:00":f"{dia_str} 11:30:00"]
             
             fig = go.Figure()
