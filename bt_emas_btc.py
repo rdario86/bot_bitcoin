@@ -17,7 +17,10 @@ with st.sidebar.form(key='panel_ajustes'):
     - **Long:** Cruce EMA 20 > 55. La vela debe ser **Verde**. Si es Roja, se espera a la siguiente. Si la siguiente es Roja, se aborta.
     - **Short:** Cruce EMA 20 < 55. La vela debe ser **Roja**. Si es Verde, se espera a la siguiente. Si la siguiente es Verde, se aborta.
     - **Stop Loss Estricto:** Extremo de la vela de entrada (o del micro-patrón de confirmación).
-    - **Horario:** Entradas de 08:00 a 10:30. Cierre forzado a las 11:00.
+    
+    **⌚ Horarios Operativos:**
+    - **Mañana (Lun-Vie):** Entradas de 08:00 a 10:30. Cierre forzado a las 11:00.
+    - **Noche (Dom-Jue):** Entradas de 20:00 a 22:30. Cierre forzado a las 23:00.
     """)
     
     st.subheader("💰 Gestión de Capital")
@@ -67,7 +70,7 @@ def obtener_datos_bingx(dias):
         df = df[~df.index.duplicated(keep='first')]
         df['Date'] = df.index.date
         
-        # Calcular las EMAs (Al descargar todo el histórico continuo, la EMA 55 es matemáticamente idéntica a TradingView)
+        # Calcular las EMAs
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA55'] = df['Close'].ewm(span=55, adjust=False).mean()
         
@@ -77,7 +80,7 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (Sincronizado con Bot en Vivo)
+# 3. MOTOR DE BACKTESTING (Doble Sesión)
 # ==========================================
 def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
@@ -88,23 +91,32 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     capital_actual = capital_inicial
     
     for fecha in fechas:
-        hora_inicio = pd.to_datetime('08:00').time()
-        hora_fin_entradas = pd.to_datetime('10:30').time()
-        hora_cierre_forzado = pd.to_datetime('11:00').time()
-        
-        horario_dia = df_calc.loc[(df_calc['Date'] == fecha) & (df_calc.index.time >= hora_inicio)]
+        horario_dia = df_calc.loc[df_calc['Date'] == fecha]
         
         trade_abierto = False
         tipo_trade, entrada, stop_loss, take_profit = None, None, None, None
         idx_entrada = None
+        sesion_origen = None 
         
         estado_espera = None
         crossover_sl_ref = None 
+        sesion_espera = None
         
         for k in range(1, len(horario_dia)):
             idx = horario_dia.index[k]
             row = horario_dia.iloc[k]
             prev_row = horario_dia.iloc[k-1]
+            
+            # Identificar el día y la sesión actual
+            dia_semana = idx.weekday() # 0 = Lunes, 6 = Domingo
+            es_lunes_a_viernes = dia_semana in [0, 1, 2, 3, 4]
+            # 🌟 CORRECCIÓN: Domingo (6) a Jueves (3)
+            es_domingo_a_jueves = dia_semana in [6, 0, 1, 2, 3] 
+            
+            en_manana = es_lunes_a_viernes and (pd.to_datetime('08:00').time() <= idx.time() <= pd.to_datetime('10:30').time())
+            en_noche = es_domingo_a_jueves and (pd.to_datetime('20:00').time() <= idx.time() <= pd.to_datetime('22:30').time())
+            
+            sesion_actual = "manana" if en_manana else ("noche" if en_noche else None)
             
             # 1. EVALUACIÓN Y BÚSQUEDA DE ENTRADAS
             if not trade_abierto:
@@ -117,7 +129,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         entrada = row['Close']
                         stop_loss = min(crossover_sl_ref, row['Low'])
                         
-                        # Protección SL Riesgo 0 idéntica al bot en vivo
                         riesgo_precio = abs(entrada - stop_loss)
                         if riesgo_precio == 0:
                             margen = entrada * 0.0005
@@ -126,6 +137,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                             
                         take_profit = entrada + (riesgo_precio * ratio)
                         idx_entrada = idx
+                        sesion_origen = sesion_espera
                     estado_espera = None 
                     
                 elif estado_espera == "Esperando_Short":
@@ -135,7 +147,6 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         entrada = row['Close']
                         stop_loss = max(crossover_sl_ref, row['High'])
                         
-                        # Protección SL Riesgo 0 idéntica al bot en vivo
                         riesgo_precio = abs(entrada - stop_loss)
                         if riesgo_precio == 0:
                             margen = entrada * 0.0005
@@ -144,10 +155,11 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                             
                         take_profit = entrada - (riesgo_precio * ratio)
                         idx_entrada = idx
+                        sesion_origen = sesion_espera
                     estado_espera = None
                 
-                # B. Buscar nuevos cruces (Solo si no venimos de abortar una espera en esta misma vela)
-                elif estado_espera is None and idx.time() <= hora_fin_entradas:
+                # B. Buscar nuevos cruces
+                elif estado_espera is None and sesion_actual is not None:
                     
                     # Cruce Alcista (EMA 20 > EMA 55)
                     cruce_alcista = (prev_row['EMA20'] <= prev_row['EMA55']) and (row['EMA20'] > row['EMA55'])
@@ -166,9 +178,11 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                                 
                             take_profit = entrada + (riesgo_precio * ratio)
                             idx_entrada = idx
+                            sesion_origen = sesion_actual
                         else: # Vela Roja (Poner en espera)
                             estado_espera = "Esperando_Long"
                             crossover_sl_ref = row['Low']
+                            sesion_espera = sesion_actual
                         
                     # Cruce Bajista (EMA 20 < EMA 55)
                     cruce_bajista = (prev_row['EMA20'] >= prev_row['EMA55']) and (row['EMA20'] < row['EMA55'])
@@ -187,9 +201,11 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                                 
                             take_profit = entrada - (riesgo_precio * ratio)
                             idx_entrada = idx
+                            sesion_origen = sesion_actual
                         else: # Vela Verde (Poner en espera)
                             estado_espera = "Esperando_Short"
                             crossover_sl_ref = row['High']
+                            sesion_espera = sesion_actual
 
             # 2. GESTIÓN DEL TRADE
             elif trade_abierto:
@@ -197,13 +213,23 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                 riesgo_usd = capital_actual * (riesgo_pct / 100)
                 fecha_cierre = idx
                 
-                # Cierre Forzado a las 11:00
-                if idx.time() >= hora_cierre_forzado:
+                # Definir si toca el cierre forzado según la sesión de origen
+                es_cierre_forzado = False
+                lbl_cierre = ""
+                
+                if sesion_origen == "manana" and idx.time() >= pd.to_datetime('11:00').time():
+                    es_cierre_forzado = True
+                    lbl_cierre = "11:00"
+                elif sesion_origen == "noche" and idx.time() >= pd.to_datetime('23:00').time():
+                    es_cierre_forzado = True
+                    lbl_cierre = "23:00"
+                
+                if es_cierre_forzado:
                     precio_cierre = row['Open']
                     dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
                     riesgo_precio = abs(entrada - stop_loss)
                     pnl_usd = (dist / riesgo_precio) * riesgo_usd
-                    resultado = "Ganancia (11:00) ⏱️✅" if pnl_usd > 0 else "Pérdida (11:00) ⏱️❌"
+                    resultado = f"Ganancia ({lbl_cierre}) ⏱️✅" if pnl_usd > 0 else f"Pérdida ({lbl_cierre}) ⏱️❌"
                     
                 # Toca Stop Loss
                 elif ("Long" in tipo_trade and row['Low'] <= stop_loss) or ("Short" in tipo_trade and row['High'] >= stop_loss):
@@ -277,6 +303,9 @@ else:
     else:
         df_tabla = df_mostrar.copy()
         df_tabla.index = range(1, len(df_tabla) + 1)
+        # Guardar copia datetime real para el gráfico
+        df_mostrar_fechas_reales = df_tabla.copy()
+        
         df_tabla['Apertura (NY)'] = df_tabla['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M')
         df_tabla['Cierre (NY)'] = df_tabla['Cierre (NY)'].dt.strftime('%Y-%m-%d %H:%M')
         for col in ['Entrada', 'Stop Loss', 'Take Profit', 'PnL ($)', 'Balance']:
@@ -285,15 +314,22 @@ else:
         st.dataframe(df_tabla[['Apertura (NY)', 'Cierre (NY)', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado', 'PnL ($)', 'Balance']], use_container_width=True)
         
         st.write("### 📊 Gráfica de Entradas y EMAs")
-        opciones_trades = [f"{row['Apertura (NY)'].strftime('%Y-%m-%d %H:%M')} | {row['Tipo']}" for _, row in df_mostrar.iterrows()]
+        opciones_trades = [f"{row['Apertura (NY)']} | {row['Tipo']}" for _, row in df_tabla.iterrows()]
         trade_str = st.selectbox("Selecciona un trade para ver el Cruce y el Filtro de Color:", opciones_trades)
         
         if trade_str:
             fecha_str = trade_str.split(" | ")[0]
-            trade = df_mostrar[df_mostrar['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M') == fecha_str].iloc[0]
-            dia_str = trade['Apertura (NY)'].strftime('%Y-%m-%d')
+            # Extraer fecha exacta y hora para ajustar el gráfico
+            dia_str = fecha_str.split(" ")[0]
+            hora_apertura = int(fecha_str.split(" ")[1].split(":")[0])
             
-            df_dia = df_btc.loc[f"{dia_str} 07:30:00":f"{dia_str} 11:30:00"]
+            trade = df_mostrar_fechas_reales[df_tabla['Apertura (NY)'] == fecha_str].iloc[0]
+            
+            # Ajuste dinámico de ventana de gráfico según la sesión
+            if hora_apertura >= 19:
+                df_dia = df_btc.loc[f"{dia_str} 19:30:00":f"{dia_str} 23:30:00"]
+            else:
+                df_dia = df_btc.loc[f"{dia_str} 07:30:00":f"{dia_str} 11:30:00"]
             
             fig = go.Figure()
             
