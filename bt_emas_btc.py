@@ -49,18 +49,32 @@ def obtener_datos_bingx(dias):
         todas_las_velas = []
         limite_velas = 1000 
         
+        intentos_fallidos = 0 # 🌟 NUEVO: Contador de errores
+        
         while True:
             try:
                 velas = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='1m', since=since, limit=limite_velas)
-                if not velas: break
+                if not velas: 
+                    break
+                    
                 todas_las_velas.extend(velas)
                 since = velas[-1][0] + 60000 
-                if len(velas) < limite_velas: break 
+                
+                if len(velas) < limite_velas: 
+                    break 
+                    
                 time.sleep(0.1) 
-            except Exception:
+                intentos_fallidos = 0 # Si tiene éxito, resetea el contador
+                
+            except Exception as e:
+                intentos_fallidos += 1
+                if intentos_fallidos > 3: # 🌟 NUEVO: Si falla 3 veces seguidas, aborta el bucle para no congelarse
+                    print(f"Límite de intentos alcanzado al descargar datos. Trabajando con lo obtenido hasta ahora.")
+                    break
                 time.sleep(1)
                 
-        if not todas_las_velas: return pd.DataFrame()
+        if not todas_las_velas: 
+            return pd.DataFrame()
             
         df = pd.DataFrame(todas_las_velas, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
         df['Timestamp'] = pd.to_datetime(df['Timestamp'], unit='ms')
@@ -76,7 +90,7 @@ def obtener_datos_bingx(dias):
         
         return df
     except Exception as e:
-        st.error(f"Error de conexión: {e}")
+        st.error(f"Error general en la obtención de datos: {e}")
         return pd.DataFrame()
 
 # ==========================================
