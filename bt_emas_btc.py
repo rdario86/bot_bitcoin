@@ -3,9 +3,8 @@ import pandas as pd
 import ccxt
 import plotly.graph_objects as go
 import time
-import math
 
-st.set_page_config(page_title="BOT EMAs (20/55) - Riesgo y Comisiones", layout="wide")
+st.set_page_config(page_title="BOT EMAs (20/55) - Efectividad de Estrategia", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA
@@ -22,21 +21,12 @@ with st.sidebar.form(key='panel_ajustes'):
     - **Noche (Dom-Jue):** Entradas de 20:00 a 22:30 (Cierre 23:00).
     """)
     
-    st.subheader("💰 Gestión de Capital Avanzada")
-    capital_inicial = st.number_input("Capital Inicial ($)", min_value=100.0, value=1000.0, step=100.0)
-    # Por defecto en 3% (index 2)
-    riesgo_pct = st.selectbox("Riesgo por Operación (%)", options=[1, 2, 3, 4, 5], index=2)
-    
-    st.markdown("""
-    *El simulador ahora incluye:*
-    - Apalancamiento Dinámico (Max 125x).
-    - Comisiones Reales: Entradas y TP (Maker 0.02%), Stop Loss (Taker 0.05%).
-    """)
     st.divider()
     
+    st.subheader("📅 Periodo de Evaluación")
     dias_historial = st.slider("Días de Backtesting", 2, 30, 20)
-    st.info("💡 Se compararán los Ratios 1:1, 1:2 y 1:3 en simultáneo.")
-    ejecutar_btn = st.form_submit_button("Ejecutar Backtest Múltiple")
+    st.info("💡 Se comparará la efectividad de los Ratios 1:1, 1:2 y 1:3 simultáneamente.")
+    ejecutar_btn = st.form_submit_button("Analizar Efectividad")
 
 # ==========================================
 # 2. CONEXIÓN A BINGX Y CÁLCULO DE EMAS
@@ -95,27 +85,20 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING INSTITUCIONAL
+# 3. MOTOR DE BACKTESTING DE EFECTIVIDAD
 # ==========================================
-def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
+def ejecutar_backtest(df, ratio):
     operaciones = []
     if df.empty: return pd.DataFrame(operaciones)
         
     df_calc = df.copy()
     fechas = df_calc['Date'].unique()
-    capital_actual = capital_inicial
-    
-    # Comisiones de BingX
-    FEE_MAKER = 0.0002 # 0.02% (Entradas Limit y TP Limit)
-    FEE_TAKER = 0.0005 # 0.05% (Stop Loss y Cierre Emergencia)
-    APALANCAMIENTO_MAX = 125
     
     for fecha in fechas:
         horario_dia = df_calc.loc[df_calc['Date'] == fecha]
         
         trade_abierto = False
         tipo_trade, entrada, stop_loss, take_profit = None, None, None, None
-        cantidad, apalancamiento, comision_entrada = 0, 0, 0
         idx_entrada, sesion_origen = None, None 
         
         estado_espera, crossover_sl_ref, sesion_espera = None, None, None
@@ -163,7 +146,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         else:
                             estado_espera, crossover_sl_ref, sesion_espera = "Esperando_Short", row['High'], sesion_actual
                             
-                # C. Ejecutar Cálculos de Capital si hay entrada
+                # C. Ejecutar Cálculos de Entrada
                 if pre_entrada is not None:
                     riesgo_precio = abs(pre_entrada - pre_sl)
                     if riesgo_precio == 0:
@@ -171,29 +154,15 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                         riesgo_precio = margen
                         pre_sl = (pre_entrada - margen) if "Long" in pre_tipo else (pre_entrada + margen)
                         
-                    riesgo_usd = capital_actual * (riesgo_pct / 100)
-                    cantidad_bruta = riesgo_usd / riesgo_precio
-                    cantidad = math.floor(cantidad_bruta * 10000) / 10000
-                    
-                    if cantidad > 0:
-                        valor_posicion = cantidad * pre_entrada
-                        margen_utilizable = capital_actual * 0.95
-                        apalancamiento = math.ceil(valor_posicion / margen_utilizable)
-                        
-                        if apalancamiento > APALANCAMIENTO_MAX:
-                            apalancamiento = APALANCAMIENTO_MAX
-                            cantidad = math.floor(((margen_utilizable * APALANCAMIENTO_MAX) / pre_entrada) * 10000) / 10000
-                            
-                        # Set variables globales del trade
-                        trade_abierto = True
-                        tipo_trade, entrada, stop_loss = pre_tipo, pre_entrada, pre_sl
-                        take_profit = (entrada + (riesgo_precio * ratio)) if "Long" in tipo_trade else (entrada - (riesgo_precio * ratio))
-                        idx_entrada, sesion_origen = idx, origen
-                        comision_entrada = (cantidad * entrada) * FEE_MAKER
+                    # Set variables globales del trade
+                    trade_abierto = True
+                    tipo_trade, entrada, stop_loss = pre_tipo, pre_entrada, pre_sl
+                    take_profit = (entrada + (riesgo_precio * ratio)) if "Long" in tipo_trade else (entrada - (riesgo_precio * ratio))
+                    idx_entrada, sesion_origen = idx, origen
 
             # --- 2. GESTIÓN DEL TRADE Y CIERRES ---
             elif trade_abierto:
-                resultado, pnl_neto, comision_salida = None, 0, 0
+                resultado = None
                 fecha_cierre = idx
                 es_cierre_forzado = False
                 lbl_cierre = ""
@@ -205,38 +174,25 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     es_cierre_forzado = True
                     lbl_cierre = "23:00"
                 
-                # 1. Cierre Forzado (Mercado / Taker)
+                # 1. Cierre Forzado
                 if es_cierre_forzado:
                     precio_salida = row['Open']
-                    comision_salida = (cantidad * precio_salida) * FEE_TAKER
-                    pnl_bruto = (precio_salida - entrada) * cantidad if "Long" in tipo_trade else (entrada - precio_salida) * cantidad
-                    pnl_neto = pnl_bruto - (comision_entrada + comision_salida)
-                    resultado = f"Ganancia ({lbl_cierre}) ⏱️✅" if pnl_neto > 0 else f"Pérdida ({lbl_cierre}) ⏱️❌"
+                    ganador = (precio_salida > entrada) if "Long" in tipo_trade else (precio_salida < entrada)
+                    resultado = f"Ganancia ({lbl_cierre}) ⏱️✅" if ganador else f"Pérdida ({lbl_cierre}) ⏱️❌"
                     
-                # 2. Toca Stop Loss (Mercado / Taker)
+                # 2. Toca Stop Loss
                 elif ("Long" in tipo_trade and row['Low'] <= stop_loss) or ("Short" in tipo_trade and row['High'] >= stop_loss):
-                    precio_salida = stop_loss
-                    comision_salida = (cantidad * precio_salida) * FEE_TAKER
-                    pnl_bruto = (precio_salida - entrada) * cantidad if "Long" in tipo_trade else (entrada - precio_salida) * cantidad
-                    pnl_neto = pnl_bruto - (comision_entrada + comision_salida)
                     resultado = "Pérdida (SL) ❌"
                     
-                # 3. Toca Take Profit (Limit / Maker)
+                # 3. Toca Take Profit
                 elif ("Long" in tipo_trade and row['High'] >= take_profit) or ("Short" in tipo_trade and row['Low'] <= take_profit):
-                    precio_salida = take_profit
-                    comision_salida = (cantidad * precio_salida) * FEE_MAKER # ¡Comisión reducida!
-                    pnl_bruto = (precio_salida - entrada) * cantidad if "Long" in tipo_trade else (entrada - precio_salida) * cantidad
-                    pnl_neto = pnl_bruto - (comision_entrada + comision_salida)
                     resultado = "Ganancia (TP) ✅"
                 
                 if resultado is not None:
-                    capital_actual += pnl_neto
                     operaciones.append({
                         'Apertura (NY)': idx_entrada, 'Cierre (NY)': fecha_cierre, 'Tipo': tipo_trade,
                         'Entrada': entrada, 'Stop Loss': stop_loss, 'Take Profit': take_profit,
-                        'Apalancamiento': f"{apalancamiento}x", 'Tamaño (BTC)': cantidad, 
-                        'Comisiones ($)': (comision_entrada + comision_salida),
-                        'Resultado': resultado, 'PnL Neto ($)': pnl_neto, 'Balance': capital_actual
+                        'Resultado': resultado
                     })
                     trade_abierto = False 
                     estado_espera = None
@@ -246,18 +202,18 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y COMPARATIVA DE RATIOS
 # ==========================================
-st.title("📈 BOT Tendencia: EMAs con Gestión Institucional")
+st.title("📈 Análisis de Efectividad: Cruce de EMAs")
 
 df_btc = obtener_datos_bingx(dias_historial)
 
 if df_btc.empty:
     st.warning("No se pudieron cargar los datos de BingX.")
 else:
-    df_rr1 = ejecutar_backtest(df_btc, 1.0, capital_inicial, riesgo_pct)
-    df_rr2 = ejecutar_backtest(df_btc, 2.0, capital_inicial, riesgo_pct)
-    df_rr3 = ejecutar_backtest(df_btc, 3.0, capital_inicial, riesgo_pct)
+    df_rr1 = ejecutar_backtest(df_btc, 1.0)
+    df_rr2 = ejecutar_backtest(df_btc, 2.0)
+    df_rr3 = ejecutar_backtest(df_btc, 3.0)
 
-    st.subheader("⚖️ Comparativa de Rentabilidad (Después de Comisiones)")
+    st.subheader("🎯 Comparativa de Win Rate por Ratio (R/R)")
     
     col1, col2, col3 = st.columns(3)
     
@@ -268,16 +224,14 @@ else:
             
         total = len(df)
         aciertos = len(df[df['Resultado'].str.contains("Ganancia")])
+        fallos = total - aciertos
         win_rate = (aciertos / total) * 100 if total > 0 else 0
-        neto = df['PnL Neto ($)'].sum()
-        comisiones_totales = df['Comisiones ($)'].sum()
         
         with col:
             st.markdown(f"### Ratio {ratio_str}")
-            st.metric("Win Rate", f"{win_rate:.1f}%", f"{aciertos} aciertos de {total}")
-            st.metric("Beneficio Neto (Real)", f"${neto:,.2f}", delta_color="normal" if neto >= 0 else "inverse")
-            st.write(f"💸 *Comisiones Pagadas: ${comisiones_totales:,.2f}*")
-            st.metric("Balance Final", f"${capital_inicial + neto:,.2f}")
+            st.metric("Win Rate", f"{win_rate:.1f}%")
+            st.write(f"**Total Trades:** {total}")
+            st.write(f"**✅ Aciertos:** {aciertos} | **❌ Fallos:** {fallos}")
 
     generar_metricas(df_rr1, "1:1", col1)
     generar_metricas(df_rr2, "1:2", col2)
@@ -285,8 +239,8 @@ else:
     
     st.divider()
 
-    st.subheader("🔍 Visualizador de Operaciones Filtradas")
-    ratio_seleccionado = st.radio("Selecciona el Ratio para ver el detalle de sus operaciones:", ["Ratio 1:1", "Ratio 1:2", "Ratio 1:3"], horizontal=True)
+    st.subheader("🔍 Registro de Operaciones")
+    ratio_seleccionado = st.radio("Selecciona el Ratio para ver su registro:", ["Ratio 1:1", "Ratio 1:2", "Ratio 1:3"], horizontal=True)
     
     df_mostrar = df_rr1 if "1:1" in ratio_seleccionado else (df_rr2 if "1:2" in ratio_seleccionado else df_rr3)
     
@@ -299,13 +253,13 @@ else:
         
         df_tabla['Apertura (NY)'] = df_tabla['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M')
         df_tabla['Cierre (NY)'] = df_tabla['Cierre (NY)'].dt.strftime('%Y-%m-%d %H:%M')
-        for col in ['Entrada', 'Stop Loss', 'Take Profit', 'PnL Neto ($)', 'Comisiones ($)', 'Balance']:
+        for col in ['Entrada', 'Stop Loss', 'Take Profit']:
             df_tabla[col] = df_tabla[col].apply(lambda x: f"${x:,.2f}")
             
-        st.dataframe(df_tabla[['Apertura (NY)', 'Tipo', 'Entrada', 'Apalancamiento', 'Tamaño (BTC)', 'Resultado', 'Comisiones ($)', 'PnL Neto ($)', 'Balance']], use_container_width=True)
+        st.dataframe(df_tabla[['Apertura (NY)', 'Cierre (NY)', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado']], use_container_width=True)
         
         st.write("### 📊 Gráfica de Entradas y EMAs")
-        opciones_trades = [f"{row['Apertura (NY)']} | {row['Tipo']} | PnL: {row['PnL Neto ($)']}" for _, row in df_tabla.iterrows()]
+        opciones_trades = [f"{row['Apertura (NY)']} | {row['Tipo']} | Res: {row['Resultado']}" for _, row in df_tabla.iterrows()]
         trade_str = st.selectbox("Selecciona un trade para ver el gráfico:", opciones_trades)
         
         if trade_str:
@@ -341,7 +295,7 @@ else:
             fig.add_hline(y=trade['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
             
             fig.update_layout(
-                title=f"Trade {trade['Tipo']} | Res: {trade['Resultado']} | PnL: ${trade['PnL Neto ($)']:.2f}",
+                title=f"Trade {trade['Tipo']} | Resultado: {trade['Resultado']}",
                 yaxis_title="Precio Bitcoin", height=650, xaxis_rangeslider_visible=False, template="plotly_dark",
                 margin=dict(l=50, r=50, t=80, b=50)
             )
