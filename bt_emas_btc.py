@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import time
 import math
 
-st.set_page_config(page_title="BOT EMAs (20/55) - Filtro de Color", layout="wide")
+st.set_page_config(page_title="BOT EMAs (20/55) - Riesgo y Comisiones", layout="wide")
 
 # ==========================================
 # 1. PARÁMETROS DE LA ESTRATEGIA
@@ -14,25 +14,28 @@ with st.sidebar.form(key='panel_ajustes'):
     st.header("⚙️ Estrategia Cruce de EMAs")
     st.markdown("""
     **Reglas de Filtrado (Color):**
-    - **Long:** Cruce EMA 20 > 55. La vela debe ser **Verde**. Si es Roja, se espera a la siguiente. Si la siguiente es Roja, se aborta.
-    - **Short:** Cruce EMA 20 < 55. La vela debe ser **Roja**. Si es Verde, se espera a la siguiente. Si la siguiente es Verde, se aborta.
-    - **Stop Loss Estricto:** Extremo de la vela de entrada (o del micro-patrón de confirmación).
+    - **Long:** Cruce EMA 20 > 55. La vela debe ser **Verde**.
+    - **Short:** Cruce EMA 20 < 55. La vela debe ser **Roja**.
     
     **⌚ Horarios Operativos:**
-    - **Mañana (Lun-Vie):** Entradas de 08:00 a 10:30. Cierre forzado a las 11:00.
-    - **Noche (Dom-Jue):** Entradas de 20:00 a 22:30. Cierre forzado a las 23:00.
+    - **Mañana (Lun-Vie):** Entradas de 08:00 a 10:30 (Cierre 11:00).
+    - **Noche (Dom-Jue):** Entradas de 20:00 a 22:30 (Cierre 23:00).
     """)
     
-    st.subheader("💰 Gestión de Capital")
+    st.subheader("💰 Gestión de Capital Avanzada")
     capital_inicial = st.number_input("Capital Inicial ($)", min_value=100.0, value=1000.0, step=100.0)
-    riesgo_pct = st.selectbox("Riesgo por Operación (%)", options=[1, 2, 3, 4, 5], index=1)
+    # Por defecto en 3% (index 2)
+    riesgo_pct = st.selectbox("Riesgo por Operación (%)", options=[1, 2, 3, 4, 5], index=2)
     
+    st.markdown("""
+    *El simulador ahora incluye:*
+    - Apalancamiento Dinámico (Max 125x).
+    - Comisiones Reales: Entradas y TP (Maker 0.02%), Stop Loss (Taker 0.05%).
+    """)
     st.divider()
     
     dias_historial = st.slider("Días de Backtesting", 2, 30, 20)
-    
     st.info("💡 Se compararán los Ratios 1:1, 1:2 y 1:3 en simultáneo.")
-    
     ejecutar_btn = st.form_submit_button("Ejecutar Backtest Múltiple")
 
 # ==========================================
@@ -48,8 +51,7 @@ def obtener_datos_bingx(dias):
         
         todas_las_velas = []
         limite_velas = 1000 
-        
-        intentos_fallidos = 0 # 🌟 NUEVO: Contador de errores
+        intentos_fallidos = 0 
         
         while True:
             try:
@@ -64,11 +66,11 @@ def obtener_datos_bingx(dias):
                     break 
                     
                 time.sleep(0.1) 
-                intentos_fallidos = 0 # Si tiene éxito, resetea el contador
+                intentos_fallidos = 0 
                 
             except Exception as e:
                 intentos_fallidos += 1
-                if intentos_fallidos > 3: # 🌟 NUEVO: Si falla 3 veces seguidas, aborta el bucle para no congelarse
+                if intentos_fallidos > 3: 
                     print(f"Límite de intentos alcanzado al descargar datos. Trabajando con lo obtenido hasta ahora.")
                     break
                 time.sleep(1)
@@ -84,7 +86,6 @@ def obtener_datos_bingx(dias):
         df = df[~df.index.duplicated(keep='first')]
         df['Date'] = df.index.date
         
-        # Calcular las EMAs
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA55'] = df['Close'].ewm(span=55, adjust=False).mean()
         
@@ -94,7 +95,7 @@ def obtener_datos_bingx(dias):
         return pd.DataFrame()
 
 # ==========================================
-# 3. MOTOR DE BACKTESTING (Doble Sesión)
+# 3. MOTOR DE BACKTESTING INSTITUCIONAL
 # ==========================================
 def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     operaciones = []
@@ -104,27 +105,28 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
     fechas = df_calc['Date'].unique()
     capital_actual = capital_inicial
     
+    # Comisiones de BingX
+    FEE_MAKER = 0.0002 # 0.02% (Entradas Limit y TP Limit)
+    FEE_TAKER = 0.0005 # 0.05% (Stop Loss y Cierre Emergencia)
+    APALANCAMIENTO_MAX = 125
+    
     for fecha in fechas:
         horario_dia = df_calc.loc[df_calc['Date'] == fecha]
         
         trade_abierto = False
         tipo_trade, entrada, stop_loss, take_profit = None, None, None, None
-        idx_entrada = None
-        sesion_origen = None 
+        cantidad, apalancamiento, comision_entrada = 0, 0, 0
+        idx_entrada, sesion_origen = None, None 
         
-        estado_espera = None
-        crossover_sl_ref = None 
-        sesion_espera = None
+        estado_espera, crossover_sl_ref, sesion_espera = None, None, None
         
         for k in range(1, len(horario_dia)):
             idx = horario_dia.index[k]
             row = horario_dia.iloc[k]
             prev_row = horario_dia.iloc[k-1]
             
-            # Identificar el día y la sesión actual
-            dia_semana = idx.weekday() # 0 = Lunes, 6 = Domingo
+            dia_semana = idx.weekday()
             es_lunes_a_viernes = dia_semana in [0, 1, 2, 3, 4]
-            # 🌟 CORRECCIÓN: Domingo (6) a Jueves (3)
             es_domingo_a_jueves = dia_semana in [6, 0, 1, 2, 3] 
             
             en_manana = es_lunes_a_viernes and (pd.to_datetime('08:00').time() <= idx.time() <= pd.to_datetime('10:30').time())
@@ -132,102 +134,67 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
             
             sesion_actual = "manana" if en_manana else ("noche" if en_noche else None)
             
-            # 1. EVALUACIÓN Y BÚSQUEDA DE ENTRADAS
+            # --- 1. EVALUACIÓN Y BÚSQUEDA DE ENTRADAS ---
             if not trade_abierto:
+                pre_entrada, pre_sl, pre_tipo, origen = None, None, None, None
                 
-                # A. Evaluar si estábamos esperando confirmación del cruce anterior
-                if estado_espera == "Esperando_Long":
-                    if row['Close'] >= row['Open']: # La siguiente vela sí fue verde
-                        trade_abierto = True
-                        tipo_trade = 'Long 🟢 (Confirmado)'
-                        entrada = row['Close']
-                        stop_loss = min(crossover_sl_ref, row['Low'])
-                        
-                        riesgo_precio = abs(entrada - stop_loss)
-                        if riesgo_precio == 0:
-                            margen = entrada * 0.0005
-                            riesgo_precio = margen
-                            stop_loss = entrada - margen
-                            
-                        take_profit = entrada + (riesgo_precio * ratio)
-                        idx_entrada = idx
-                        sesion_origen = sesion_espera
+                # A. Evaluación de Espera
+                if estado_espera == "Esperando_Long" and row['Close'] >= row['Open']:
+                    pre_entrada, pre_sl, pre_tipo, origen = row['Close'], min(crossover_sl_ref, row['Low']), 'Long 🟢 (Conf)', sesion_espera
                     estado_espera = None 
-                    
-                elif estado_espera == "Esperando_Short":
-                    if row['Close'] <= row['Open']: # La siguiente vela sí fue roja
-                        trade_abierto = True
-                        tipo_trade = 'Short 🔴 (Confirmado)'
-                        entrada = row['Close']
-                        stop_loss = max(crossover_sl_ref, row['High'])
-                        
-                        riesgo_precio = abs(entrada - stop_loss)
-                        if riesgo_precio == 0:
-                            margen = entrada * 0.0005
-                            riesgo_precio = margen
-                            stop_loss = entrada + margen
-                            
-                        take_profit = entrada - (riesgo_precio * ratio)
-                        idx_entrada = idx
-                        sesion_origen = sesion_espera
+                elif estado_espera == "Esperando_Short" and row['Close'] <= row['Open']:
+                    pre_entrada, pre_sl, pre_tipo, origen = row['Close'], max(crossover_sl_ref, row['High']), 'Short 🔴 (Conf)', sesion_espera
                     estado_espera = None
-                
-                # B. Buscar nuevos cruces
-                elif estado_espera is None and sesion_actual is not None:
                     
-                    # Cruce Alcista (EMA 20 > EMA 55)
+                # B. Búsqueda de Cruces Nuevos
+                elif estado_espera is None and sesion_actual is not None:
                     cruce_alcista = (prev_row['EMA20'] <= prev_row['EMA55']) and (row['EMA20'] > row['EMA55'])
-                    if cruce_alcista:
-                        if row['Close'] >= row['Open']: # Vela Verde (Entrada Directa)
-                            trade_abierto = True
-                            tipo_trade = 'Long 🟢'
-                            entrada = row['Close'] 
-                            stop_loss = row['Low']
-                            
-                            riesgo_precio = abs(entrada - stop_loss)
-                            if riesgo_precio == 0:
-                                margen = entrada * 0.0005
-                                riesgo_precio = margen
-                                stop_loss = entrada - margen
-                                
-                            take_profit = entrada + (riesgo_precio * ratio)
-                            idx_entrada = idx
-                            sesion_origen = sesion_actual
-                        else: # Vela Roja (Poner en espera)
-                            estado_espera = "Esperando_Long"
-                            crossover_sl_ref = row['Low']
-                            sesion_espera = sesion_actual
-                        
-                    # Cruce Bajista (EMA 20 < EMA 55)
                     cruce_bajista = (prev_row['EMA20'] >= prev_row['EMA55']) and (row['EMA20'] < row['EMA55'])
-                    if cruce_bajista:
-                        if row['Close'] <= row['Open']: # Vela Roja (Entrada Directa)
-                            trade_abierto = True
-                            tipo_trade = 'Short 🔴'
-                            entrada = row['Close']
-                            stop_loss = row['High']
+                    
+                    if cruce_alcista:
+                        if row['Close'] >= row['Open']:
+                            pre_entrada, pre_sl, pre_tipo, origen = row['Close'], row['Low'], 'Long 🟢', sesion_actual
+                        else:
+                            estado_espera, crossover_sl_ref, sesion_espera = "Esperando_Long", row['Low'], sesion_actual
                             
-                            riesgo_precio = abs(entrada - stop_loss)
-                            if riesgo_precio == 0:
-                                margen = entrada * 0.0005
-                                riesgo_precio = margen
-                                stop_loss = entrada + margen
-                                
-                            take_profit = entrada - (riesgo_precio * ratio)
-                            idx_entrada = idx
-                            sesion_origen = sesion_actual
-                        else: # Vela Verde (Poner en espera)
-                            estado_espera = "Esperando_Short"
-                            crossover_sl_ref = row['High']
-                            sesion_espera = sesion_actual
+                    elif cruce_bajista:
+                        if row['Close'] <= row['Open']:
+                            pre_entrada, pre_sl, pre_tipo, origen = row['Close'], row['High'], 'Short 🔴', sesion_actual
+                        else:
+                            estado_espera, crossover_sl_ref, sesion_espera = "Esperando_Short", row['High'], sesion_actual
+                            
+                # C. Ejecutar Cálculos de Capital si hay entrada
+                if pre_entrada is not None:
+                    riesgo_precio = abs(pre_entrada - pre_sl)
+                    if riesgo_precio == 0:
+                        margen = pre_entrada * 0.0005
+                        riesgo_precio = margen
+                        pre_sl = (pre_entrada - margen) if "Long" in pre_tipo else (pre_entrada + margen)
+                        
+                    riesgo_usd = capital_actual * (riesgo_pct / 100)
+                    cantidad_bruta = riesgo_usd / riesgo_precio
+                    cantidad = math.floor(cantidad_bruta * 10000) / 10000
+                    
+                    if cantidad > 0:
+                        valor_posicion = cantidad * pre_entrada
+                        margen_utilizable = capital_actual * 0.95
+                        apalancamiento = math.ceil(valor_posicion / margen_utilizable)
+                        
+                        if apalancamiento > APALANCAMIENTO_MAX:
+                            apalancamiento = APALANCAMIENTO_MAX
+                            cantidad = math.floor(((margen_utilizable * APALANCAMIENTO_MAX) / pre_entrada) * 10000) / 10000
+                            
+                        # Set variables globales del trade
+                        trade_abierto = True
+                        tipo_trade, entrada, stop_loss = pre_tipo, pre_entrada, pre_sl
+                        take_profit = (entrada + (riesgo_precio * ratio)) if "Long" in tipo_trade else (entrada - (riesgo_precio * ratio))
+                        idx_entrada, sesion_origen = idx, origen
+                        comision_entrada = (cantidad * entrada) * FEE_MAKER
 
-            # 2. GESTIÓN DEL TRADE
+            # --- 2. GESTIÓN DEL TRADE Y CIERRES ---
             elif trade_abierto:
-                resultado = None
-                riesgo_usd = capital_actual * (riesgo_pct / 100)
+                resultado, pnl_neto, comision_salida = None, 0, 0
                 fecha_cierre = idx
-                
-                # Definir si toca el cierre forzado según la sesión de origen
                 es_cierre_forzado = False
                 lbl_cierre = ""
                 
@@ -238,29 +205,38 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
                     es_cierre_forzado = True
                     lbl_cierre = "23:00"
                 
+                # 1. Cierre Forzado (Mercado / Taker)
                 if es_cierre_forzado:
-                    precio_cierre = row['Open']
-                    dist = (precio_cierre - entrada) if "Long" in tipo_trade else (entrada - precio_cierre)
-                    riesgo_precio = abs(entrada - stop_loss)
-                    pnl_usd = (dist / riesgo_precio) * riesgo_usd
-                    resultado = f"Ganancia ({lbl_cierre}) ⏱️✅" if pnl_usd > 0 else f"Pérdida ({lbl_cierre}) ⏱️❌"
+                    precio_salida = row['Open']
+                    comision_salida = (cantidad * precio_salida) * FEE_TAKER
+                    pnl_bruto = (precio_salida - entrada) * cantidad if "Long" in tipo_trade else (entrada - precio_salida) * cantidad
+                    pnl_neto = pnl_bruto - (comision_entrada + comision_salida)
+                    resultado = f"Ganancia ({lbl_cierre}) ⏱️✅" if pnl_neto > 0 else f"Pérdida ({lbl_cierre}) ⏱️❌"
                     
-                # Toca Stop Loss
+                # 2. Toca Stop Loss (Mercado / Taker)
                 elif ("Long" in tipo_trade and row['Low'] <= stop_loss) or ("Short" in tipo_trade and row['High'] >= stop_loss):
-                    pnl_usd = -riesgo_usd
+                    precio_salida = stop_loss
+                    comision_salida = (cantidad * precio_salida) * FEE_TAKER
+                    pnl_bruto = (precio_salida - entrada) * cantidad if "Long" in tipo_trade else (entrada - precio_salida) * cantidad
+                    pnl_neto = pnl_bruto - (comision_entrada + comision_salida)
                     resultado = "Pérdida (SL) ❌"
                     
-                # Toca Take Profit
+                # 3. Toca Take Profit (Limit / Maker)
                 elif ("Long" in tipo_trade and row['High'] >= take_profit) or ("Short" in tipo_trade and row['Low'] <= take_profit):
-                    pnl_usd = riesgo_usd * ratio
+                    precio_salida = take_profit
+                    comision_salida = (cantidad * precio_salida) * FEE_MAKER # ¡Comisión reducida!
+                    pnl_bruto = (precio_salida - entrada) * cantidad if "Long" in tipo_trade else (entrada - precio_salida) * cantidad
+                    pnl_neto = pnl_bruto - (comision_entrada + comision_salida)
                     resultado = "Ganancia (TP) ✅"
                 
                 if resultado is not None:
-                    capital_actual += pnl_usd
+                    capital_actual += pnl_neto
                     operaciones.append({
                         'Apertura (NY)': idx_entrada, 'Cierre (NY)': fecha_cierre, 'Tipo': tipo_trade,
                         'Entrada': entrada, 'Stop Loss': stop_loss, 'Take Profit': take_profit,
-                        'Resultado': resultado, 'PnL ($)': pnl_usd, 'Balance': capital_actual
+                        'Apalancamiento': f"{apalancamiento}x", 'Tamaño (BTC)': cantidad, 
+                        'Comisiones ($)': (comision_entrada + comision_salida),
+                        'Resultado': resultado, 'PnL Neto ($)': pnl_neto, 'Balance': capital_actual
                     })
                     trade_abierto = False 
                     estado_espera = None
@@ -270,7 +246,7 @@ def ejecutar_backtest(df, ratio, capital_inicial, riesgo_pct):
 # ==========================================
 # 4. INTERFAZ Y COMPARATIVA DE RATIOS
 # ==========================================
-st.title("📈 BOT Tendencia: EMAs con Filtro de Color")
+st.title("📈 BOT Tendencia: EMAs con Gestión Institucional")
 
 df_btc = obtener_datos_bingx(dias_historial)
 
@@ -281,7 +257,7 @@ else:
     df_rr2 = ejecutar_backtest(df_btc, 2.0, capital_inicial, riesgo_pct)
     df_rr3 = ejecutar_backtest(df_btc, 3.0, capital_inicial, riesgo_pct)
 
-    st.subheader("⚖️ Comparativa de Rentabilidad por Ratio (R/R)")
+    st.subheader("⚖️ Comparativa de Rentabilidad (Después de Comisiones)")
     
     col1, col2, col3 = st.columns(3)
     
@@ -293,12 +269,14 @@ else:
         total = len(df)
         aciertos = len(df[df['Resultado'].str.contains("Ganancia")])
         win_rate = (aciertos / total) * 100 if total > 0 else 0
-        neto = df['PnL ($)'].sum()
+        neto = df['PnL Neto ($)'].sum()
+        comisiones_totales = df['Comisiones ($)'].sum()
         
         with col:
             st.markdown(f"### Ratio {ratio_str}")
             st.metric("Win Rate", f"{win_rate:.1f}%", f"{aciertos} aciertos de {total}")
-            st.metric("Beneficio Neto", f"${neto:,.2f}", delta_color="normal" if neto >= 0 else "inverse")
+            st.metric("Beneficio Neto (Real)", f"${neto:,.2f}", delta_color="normal" if neto >= 0 else "inverse")
+            st.write(f"💸 *Comisiones Pagadas: ${comisiones_totales:,.2f}*")
             st.metric("Balance Final", f"${capital_inicial + neto:,.2f}")
 
     generar_metricas(df_rr1, "1:1", col1)
@@ -317,29 +295,26 @@ else:
     else:
         df_tabla = df_mostrar.copy()
         df_tabla.index = range(1, len(df_tabla) + 1)
-        # Guardar copia datetime real para el gráfico
         df_mostrar_fechas_reales = df_tabla.copy()
         
         df_tabla['Apertura (NY)'] = df_tabla['Apertura (NY)'].dt.strftime('%Y-%m-%d %H:%M')
         df_tabla['Cierre (NY)'] = df_tabla['Cierre (NY)'].dt.strftime('%Y-%m-%d %H:%M')
-        for col in ['Entrada', 'Stop Loss', 'Take Profit', 'PnL ($)', 'Balance']:
+        for col in ['Entrada', 'Stop Loss', 'Take Profit', 'PnL Neto ($)', 'Comisiones ($)', 'Balance']:
             df_tabla[col] = df_tabla[col].apply(lambda x: f"${x:,.2f}")
             
-        st.dataframe(df_tabla[['Apertura (NY)', 'Cierre (NY)', 'Tipo', 'Entrada', 'Stop Loss', 'Take Profit', 'Resultado', 'PnL ($)', 'Balance']], use_container_width=True)
+        st.dataframe(df_tabla[['Apertura (NY)', 'Tipo', 'Entrada', 'Apalancamiento', 'Tamaño (BTC)', 'Resultado', 'Comisiones ($)', 'PnL Neto ($)', 'Balance']], use_container_width=True)
         
         st.write("### 📊 Gráfica de Entradas y EMAs")
-        opciones_trades = [f"{row['Apertura (NY)']} | {row['Tipo']}" for _, row in df_tabla.iterrows()]
-        trade_str = st.selectbox("Selecciona un trade para ver el Cruce y el Filtro de Color:", opciones_trades)
+        opciones_trades = [f"{row['Apertura (NY)']} | {row['Tipo']} | PnL: {row['PnL Neto ($)']}" for _, row in df_tabla.iterrows()]
+        trade_str = st.selectbox("Selecciona un trade para ver el gráfico:", opciones_trades)
         
         if trade_str:
             fecha_str = trade_str.split(" | ")[0]
-            # Extraer fecha exacta y hora para ajustar el gráfico
             dia_str = fecha_str.split(" ")[0]
             hora_apertura = int(fecha_str.split(" ")[1].split(":")[0])
             
             trade = df_mostrar_fechas_reales[df_tabla['Apertura (NY)'] == fecha_str].iloc[0]
             
-            # Ajuste dinámico de ventana de gráfico según la sesión
             if hora_apertura >= 19:
                 df_dia = df_btc.loc[f"{dia_str} 19:30:00":f"{dia_str} 23:30:00"]
             else:
@@ -362,11 +337,11 @@ else:
                 marker=dict(symbol=simbolo, size=18, color=color, line=dict(width=2, color='white'))
             ))
             
-            fig.add_hline(y=trade['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss (Extremo Vela)")
+            fig.add_hline(y=trade['Stop Loss'], line_dash="solid", line_color="red", annotation_text="Stop Loss")
             fig.add_hline(y=trade['Take Profit'], line_dash="solid", line_color="green", annotation_text="Take Profit")
             
             fig.update_layout(
-                title=f"Trade {trade['Tipo']} | Res: {trade['Resultado']}",
+                title=f"Trade {trade['Tipo']} | Res: {trade['Resultado']} | PnL: ${trade['PnL Neto ($)']:.2f}",
                 yaxis_title="Precio Bitcoin", height=650, xaxis_rangeslider_visible=False, template="plotly_dark",
                 margin=dict(l=50, r=50, t=80, b=50)
             )
