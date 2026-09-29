@@ -8,8 +8,8 @@ import math
 # ==========================================
 # 1. CONFIGURACIÓN DEL USUARIO
 # ==========================================
-API_KEY = 'WJkk2CHt59Gv3iphdXf03NozkFYlxwaCrNqFi9or9CxPWHTRNmUA72O3uCrXg98ZUCoNpXqw5gfJdZ1u7UQ'
-API_SECRET = 'sOq1gjKraySQWcu34ZkW8SqoSCwZiWzR8I7VCXAZDmi88xVMLkQye6ZQiOsdEGvgt4KONydDXsFRujxlT1FTQ'
+API_KEY = 'AGREGAR API KEY'
+API_SECRET = 'AGREGAR API SECRET'
 
 SIMBOLO = 'BTC/USDT:USDT'
 APALANCAMIENTO = 25 
