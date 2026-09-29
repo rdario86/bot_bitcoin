@@ -92,7 +92,7 @@ def ejecutar_backtest(df, ratio):
         
     df_calc = df.copy()
     
-    # ⚡ PRE-CÁLCULO MATEMÁTICO: Acelerador x100 de velocidad
+    # ⚡ PRE-CÁLCULO MATEMÁTICO
     df_calc['hour'] = df_calc.index.hour
     df_calc['minute'] = df_calc.index.minute
     df_calc['weekday'] = df_calc.index.weekday
@@ -100,7 +100,6 @@ def ejecutar_backtest(df, ratio):
     es_lunes_a_viernes = df_calc['weekday'].isin([0, 1, 2, 3, 4]).values
     es_domingo_a_jueves = df_calc['weekday'].isin([6, 0, 1, 2, 3]).values
     
-    # Marcamos las sesiones en milisegundos
     horas_manana = (df_calc['hour'].isin([8, 9])) | ((df_calc['hour'] == 10) & (df_calc['minute'] <= 30))
     en_manana = (es_lunes_a_viernes & horas_manana).values
     
@@ -110,7 +109,6 @@ def ejecutar_backtest(df, ratio):
     cierre_manana = (df_calc['hour'] >= 11).values
     cierre_noche = (df_calc['hour'] >= 23).values
 
-    # Extraemos arrays nativos para bucle ultrarrápido (129,000 velas en 0.1s)
     fechas = df_calc.index
     opens, highs, lows, closes = df_calc['Open'].values, df_calc['High'].values, df_calc['Low'].values, df_calc['Close'].values
     ema20, ema55 = df_calc['EMA20'].values, df_calc['EMA55'].values
@@ -132,13 +130,20 @@ def ejecutar_backtest(df, ratio):
         if not trade_abierto:
             pre_entrada, pre_sl, pre_tipo, origen = None, None, None, None
             
-            if estado_espera == "Esperando_Long" and c >= o:
-                pre_entrada, pre_sl, pre_tipo, origen = c, min(crossover_sl_ref, l), 'Long 🟢 (Conf)', sesion_espera
+            # A. Evaluación de Espera (AHORA IDÉNTICO AL BOT EN VIVO)
+            if estado_espera == "Esperando_Long":
+                if c >= o: # Vela verde confirma
+                    pre_entrada, pre_sl, pre_tipo, origen = c, min(crossover_sl_ref, l), 'Long 🟢 (Conf)', sesion_espera
+                # SÍ O SÍ limpiamos el estado de espera para abortar si falló
                 estado_espera = None 
-            elif estado_espera == "Esperando_Short" and c <= o:
-                pre_entrada, pre_sl, pre_tipo, origen = c, max(crossover_sl_ref, h), 'Short 🔴 (Conf)', sesion_espera
+                
+            elif estado_espera == "Esperando_Short":
+                if c <= o: # Vela roja confirma
+                    pre_entrada, pre_sl, pre_tipo, origen = c, max(crossover_sl_ref, h), 'Short 🔴 (Conf)', sesion_espera
+                # SÍ O SÍ limpiamos el estado de espera para abortar si falló
                 estado_espera = None
                 
+            # B. Buscar nuevos cruces
             elif estado_espera is None and sesion_actual is not None:
                 cruce_alcista = (prev_e20 <= prev_e55) and (curr_e20 > curr_e55)
                 cruce_bajista = (prev_e20 >= prev_e55) and (curr_e20 < curr_e55)
@@ -155,6 +160,7 @@ def ejecutar_backtest(df, ratio):
                     else:
                         estado_espera, crossover_sl_ref, sesion_espera = "Esperando_Short", h, sesion_actual
                         
+            # Si se generó una entrada válida, registramos:
             if pre_entrada is not None:
                 riesgo_precio = abs(pre_entrada - pre_sl)
                 if riesgo_precio == 0:
